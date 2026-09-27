@@ -1,0 +1,23 @@
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+
+# Runtime data
+*.db
+*.sqlite
+*.sqlite3
+data/
+logs/
+
+# OS / editors
+.DS_Store
+.idea/
+.vscode/

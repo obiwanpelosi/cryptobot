@@ -1,0 +1,36 @@
+symbols: [SOLUSDT, LINKUSDT]
+context_symbols: [BTCUSDT]
+
+mode: paper            # paper | live-advisory | live-execution (later phase)
+
+timeframes: [15m, 1h, 4h, 1d]
+history_candles: 500   # per timeframe, loaded on startup
+
+dip_rules:
+  min_drop_from_high_pct: 6      # drop from recent high
+  high_lookback_hours: 72
+  rsi_1h_max: 35
+  require_lower_bollinger_4h: false
+  btc_crash_guard_pct_1h: 3      # if BTC fell more than this in 1h, flag as high-risk
+  cooldown_minutes_per_symbol: 180
+
+exit_alerts:
+  profit_targets_pct: [10, 15, 20]
+  stop_atr_multiplier: 2.0       # stop = entry - (ATR_4h * multiplier)
+  trailing_after_pct: 15         # optional trailing stop suggestion once past this
+
+sizing:
+  risk_per_trade_pct: 1.5        # max % of total balance lost if stop is hit
+  max_position_pct: 30           # never suggest more than this % of balance in one trade
+  min_order_usdt: 10
+
+fees:
+  taker_pct: 0.1                 # include in all P/L calculations
+
+ai:
+  enabled: false                 # turned on in Phase 6
+  provider: anthropic
+  light_model: claude-haiku-4-5-20251001   # routine checks
+  strong_model: claude-sonnet-5            # entry and hold/sell decisions
+  max_calls_per_hour: 20
+  timeout_seconds: 60
