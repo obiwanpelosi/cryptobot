@@ -383,7 +383,6 @@ dependencies = [
     { name = "python-telegram-bot" },
     { name = "pyyaml" },
     { name = "sqlalchemy" },
-    { name = "ta" },
 ]
 
 [package.dev-dependencies]
@@ -391,6 +390,7 @@ dev = [
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "ruff" },
+    { name = "ta" },
 ]
 
 [package.metadata]
@@ -405,7 +405,6 @@ requires-dist = [
     { name = "python-telegram-bot", specifier = ">=21" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "sqlalchemy", specifier = ">=2.0" },
-    { name = "ta", specifier = ">=0.11" },
 ]
 
 [package.metadata.requires-dev]
@@ -413,6 +412,7 @@ dev = [
     { name = "pytest", specifier = ">=8" },
     { name = "pytest-asyncio", specifier = ">=0.23" },
     { name = "ruff", specifier = ">=0.6" },
+    { name = "ta", specifier = ">=0.11" },
 ]
 
 [[package]]

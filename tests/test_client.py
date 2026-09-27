@@ -124,3 +124,26 @@ async def test_high_weight_warns(caplog):
     with caplog.at_level(logging.WARNING):
         await bc.get_balances()
     assert "weight high" in caplog.text
+
+
+def kline_row(open_ms, close_ms, close="1.5"):
+    return [open_ms, "1", "2", "0.5", close, "10", close_ms, "0", 0, "0", "0", "0"]
+
+
+async def test_get_klines_drops_open_candle():
+    bc, raw = make_client()
+    raw.get_klines = AsyncMock(return_value=[kline_row(0, 999), kline_row(1000, 1999)])
+    candles = await bc.get_klines("SOLUSDT", "15m", limit=2, now_ms=1500)
+    assert [c.open_time_ms for c in candles] == [0]
+    assert candles[0].close == 1.5
+    raw.get_klines.assert_awaited_once_with(symbol="SOLUSDT", interval="15m", limit=2)
+
+
+async def test_get_funding_as_percent():
+    bc, raw = make_client()
+    raw.futures_mark_price = AsyncMock(
+        return_value={"lastFundingRate": "0.00002115", "nextFundingTime": 123}
+    )
+    result = await bc.get_funding("SOLUSDT")
+    assert result["funding_rate_pct"] == pytest.approx(0.002115)
+    assert result["next_funding_time_ms"] == 123

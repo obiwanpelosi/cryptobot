@@ -114,3 +114,61 @@ async def test_error_handler_notifies_throttled(monkeypatch):
     now[0] += handlers.ERROR_NOTICE_INTERVAL
     await handlers.error_handler(None, ctx)
     assert deps.notifier.send.await_count == 2
+
+
+def make_analysis_context(deps, args):
+    return SimpleNamespace(bot_data={"deps": deps}, error=None, args=args)
+
+
+def test_resolve_symbol():
+    symbols = ["SOLUSDT", "LINKUSDT"]
+    assert handlers.resolve_symbol("sol", symbols) == "SOLUSDT"
+    assert handlers.resolve_symbol("LINKUSDT", symbols) == "LINKUSDT"
+    assert handlers.resolve_symbol("doge", symbols) is None
+
+
+async def test_analysis_usage_on_missing_or_bad_symbol():
+    deps = make_deps()
+    for args in ([], ["DOGE"]):
+        update = make_update()
+        await handlers.analysis_cmd(update, make_analysis_context(deps, args))
+        text = replied_text(update)
+        assert "Usage: /analysis" in text and "SOL, LINK" in text
+
+
+async def test_analysis_warming_up():
+    deps = make_deps()
+    deps.snapshots = SimpleNamespace(build=lambda symbol: None)
+    update = make_update()
+    await handlers.analysis_cmd(update, make_analysis_context(deps, ["sol"]))
+    assert "warming up" in replied_text(update)
+
+
+async def test_analysis_replies_with_snapshot():
+    from tests.test_snapshot import NOW_MS, make_builder
+
+    builder, _ = make_builder()
+    deps = make_deps()
+    deps.snapshots = SimpleNamespace(build=lambda symbol: builder.build(symbol, now_ms=NOW_MS))
+    update = make_update()
+    await handlers.analysis_cmd(update, make_analysis_context(deps, ["sol"]))
+    text = replied_text(update)
+    assert text.startswith("[PAPER] <b>SOL</b> 121.50")
+    assert "<pre>" in text and "15m" in text and "1d" in text
+    assert "Fear &amp; Greed: 40 (Fear)" in text
+    assert "BTC 81,000.00" in text
+
+
+def test_polling_conflict_logged_once_per_minute(caplog, monkeypatch):
+    from telegram.error import Conflict
+
+    handlers._last_polling_warning.clear()
+    now = [0.0]
+    monkeypatch.setattr(handlers.time, "monotonic", lambda: now[0])
+    with caplog.at_level(logging.WARNING):
+        handlers.polling_error(Conflict("terminated by other getUpdates request"))
+        handlers.polling_error(Conflict("again"))
+        now[0] = 61
+        handlers.polling_error(Conflict("later"))
+    assert caplog.text.count("another instance of this bot") == 2
+    assert "Traceback" not in caplog.text

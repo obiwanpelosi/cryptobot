@@ -112,3 +112,55 @@ async def test_run_reconnects_after_error(monkeypatch):
     assert opened[0] == ["solusdt@miniTicker"]
     assert stream.ticks["SOLUSDT"].price == D("120")
     assert len(sleeps) == 2 and sleeps[1] > sleeps[0]  # backoff grew between failures
+
+
+def kline(symbol, interval, closed, t=0):
+    return {
+        "stream": f"{symbol.lower()}@kline_{interval}",
+        "data": {
+            "e": "kline",
+            "s": symbol,
+            "k": {"t": t, "T": t + 899_999, "s": symbol, "i": interval,
+                  "o": "1", "h": "2", "l": "0.5", "c": "1.5", "v": "10", "x": closed},
+        },
+    }
+
+
+def test_stream_names_include_klines():
+    stream = PriceStream(["SOLUSDT"], socket_factory=None, kline_intervals=["15m", "1h"])
+    assert stream.stream_names == ["solusdt@miniTicker", "solusdt@kline_15m", "solusdt@kline_1h"]
+
+
+def test_only_closed_klines_emit_candles():
+    got = []
+    stream = PriceStream(
+        ["SOLUSDT"], socket_factory=None, on_candle=lambda s, i, c: got.append((s, i, c))
+    )
+    stream.handle_message(kline("SOLUSDT", "15m", closed=False))
+    assert got == []
+    assert stream.last_message_at is not None  # still counts as a live message
+    stream.handle_message(kline("SOLUSDT", "15m", closed=True, t=900_000))
+    (symbol, interval, candle), = got
+    assert (symbol, interval) == ("SOLUSDT", "15m")
+    assert candle.open_time_ms == 900_000 and candle.close == 1.5 and candle.volume == 10
+
+
+async def test_on_connect_fires_each_connection(monkeypatch):
+    real_sleep = asyncio.sleep
+
+    async def fast_sleep(delay):
+        await real_sleep(0)
+
+    monkeypatch.setattr(streams.asyncio, "sleep", fast_sleep)
+    sockets = iter([FakeSocket([ConnectionError("x")]), FakeSocket([])])
+    connects = []
+    stream = PriceStream(
+        ["SOLUSDT"], lambda names: next(sockets), on_connect=lambda: connects.append(1)
+    )
+    task = asyncio.create_task(stream.run())
+    for _ in range(20):
+        await real_sleep(0)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert len(connects) == 2

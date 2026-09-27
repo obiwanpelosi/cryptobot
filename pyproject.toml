@@ -9,7 +9,6 @@ dependencies = [
     "python-telegram-bot>=21",
     "pandas>=2.2",
     "numpy>=1.26",
-    "ta>=0.11",
     "SQLAlchemy>=2.0",
     "pydantic>=2.6",
     "pydantic-settings>=2.7",
@@ -20,6 +19,7 @@ dependencies = [
 
 [dependency-groups]
 dev = [
+    "ta>=0.11",
     "pytest>=8",
     "pytest-asyncio>=0.23",
     "ruff>=0.6",

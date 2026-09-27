@@ -15,7 +15,7 @@ from collections.abc import Callable, Iterable
 from decimal import Decimal
 from typing import Any, Protocol
 
-from bot.exchange.models import Tick
+from bot.exchange.models import Candle, Tick
 
 log = logging.getLogger(__name__)
 
@@ -41,11 +41,17 @@ class PriceStream:
         socket_factory: SocketFactory,
         *,
         on_tick: Callable[[Tick], None] | None = None,
+        kline_intervals: Iterable[str] = (),
+        on_candle: Callable[[str, str, Candle], None] | None = None,
+        on_connect: Callable[[], None] | None = None,
         clock: Callable[[], float] = time.monotonic,
     ):
         self.symbols = [s.upper() for s in symbols]
+        self.kline_intervals = list(kline_intervals)
         self._socket_factory = socket_factory
         self._on_tick = on_tick
+        self._on_candle = on_candle
+        self._on_connect = on_connect
         self._clock = clock
         self.ticks: dict[str, Tick] = {}
         self.last_message_at: float | None = None
@@ -55,7 +61,9 @@ class PriceStream:
 
     @property
     def stream_names(self) -> list[str]:
-        return [f"{s.lower()}@miniTicker" for s in self.symbols]
+        names = [f"{s.lower()}@miniTicker" for s in self.symbols]
+        names += [f"{s.lower()}@kline_{i}" for s in self.symbols for i in self.kline_intervals]
+        return names
 
     def seed(self, ticks: dict[str, Tick]) -> None:
         """Prefill prices (e.g. from REST) so there's something to show before the first message."""
@@ -85,7 +93,13 @@ class PriceStream:
 
     async def _consume(self) -> None:
         async with self._socket_factory(self.stream_names) as socket:
-            log.info("Price stream connected: %s", ", ".join(self.symbols))
+            log.info(
+                "Price stream connected: %s (%d streams)",
+                ", ".join(self.symbols),
+                len(self.stream_names),
+            )
+            if self._on_connect:
+                self._on_connect()
             while True:
                 msg = await asyncio.wait_for(socket.recv(), timeout=RECV_TIMEOUT)
                 self.handle_message(msg)
@@ -96,7 +110,11 @@ class PriceStream:
         if msg.get("e") == "error":
             raise StreamError(f"{msg.get('type')}: {msg.get('m')}")
         data = msg.get("data", msg)
-        if data.get("e") != "24hrMiniTicker":
+        event = data.get("e")
+        if event == "kline":
+            self._handle_kline(data)
+            return
+        if event != "24hrMiniTicker":
             return
         close, open_ = Decimal(data["c"]), Decimal(data["o"])
         change = (close - open_) / open_ * 100 if open_ else Decimal(0)
@@ -110,3 +128,20 @@ class PriceStream:
         self._backoff = BACKOFF_START
         if self._on_tick:
             self._on_tick(tick)
+
+    def _handle_kline(self, data: dict[str, Any]) -> None:
+        self.last_message_at = self._clock()
+        self._backoff = BACKOFF_START
+        k = data["k"]
+        if not k.get("x") or self._on_candle is None:
+            return
+        candle = Candle(
+            open_time_ms=int(k["t"]),
+            open=float(k["o"]),
+            high=float(k["h"]),
+            low=float(k["l"]),
+            close=float(k["c"]),
+            volume=float(k["v"]),
+            close_time_ms=int(k["T"]),
+        )
+        self._on_candle(k["s"], k["i"], candle)

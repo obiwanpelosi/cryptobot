@@ -17,7 +17,7 @@ from typing import Any
 from binance import AsyncClient
 from binance.exceptions import BinanceAPIException
 
-from bot.exchange.models import Balance, Tick
+from bot.exchange.models import Balance, Candle, Tick
 from bot.settings import Secrets
 
 log = logging.getLogger(__name__)
@@ -155,6 +155,55 @@ class BinanceClient:
             )
             for r in rows
         }
+
+    async def get_klines(
+        self, symbol: str, interval: str, limit: int = 500, *, now_ms: int | None = None
+    ) -> list[Candle]:
+        """Closed candles only: the still-forming last candle is dropped."""
+        rows = await self._call(
+            self._client.get_klines, symbol=symbol, interval=interval, limit=limit
+        )
+        now_ms = int(time.time() * 1000) if now_ms is None else now_ms
+        return [candle for candle in map(_parse_kline, rows) if candle.close_time_ms < now_ms]
+
+    async def get_funding(self, symbol: str) -> dict[str, Any]:
+        """Latest funding rate (as %) and next funding time, from USD-M futures (public)."""
+        data = await self._call(self._client.futures_mark_price, symbol=symbol)
+        return {
+            "funding_rate_pct": float(data["lastFundingRate"]) * 100,
+            "next_funding_time_ms": int(data["nextFundingTime"]),
+        }
+
+    async def get_open_interest_change(self, symbol: str) -> dict[str, Any]:
+        """Current open interest (USDT) and its 24h % change, from hourly OI history."""
+        rows = await self._call(
+            self._client.futures_open_interest_hist, symbol=symbol, period="1h", limit=25
+        )
+        return open_interest_change(rows)
+
+
+def _parse_kline(row: list[Any]) -> Candle:
+    return Candle(
+        open_time_ms=int(row[0]),
+        open=float(row[1]),
+        high=float(row[2]),
+        low=float(row[3]),
+        close=float(row[4]),
+        volume=float(row[5]),
+        close_time_ms=int(row[6]),
+    )
+
+
+def open_interest_change(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """24h change is measured in contracts (sumOpenInterest) so price moves don't distort it."""
+    if not rows:
+        raise ValueError("empty open interest history")
+    rows = sorted(rows, key=lambda r: int(r["timestamp"]))
+    first, last = float(rows[0]["sumOpenInterest"]), float(rows[-1]["sumOpenInterest"])
+    return {
+        "open_interest_usdt": float(rows[-1]["sumOpenInterestValue"]),
+        "oi_change_24h_pct": (last - first) / first * 100 if first else 0.0,
+    }
 
 
 def _retry_after(exc: BinanceAPIException) -> int:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime as dt
 from pathlib import Path
 from typing import Annotated, Literal
 
@@ -76,6 +77,11 @@ class AIConfig(BaseModel):
     timeout_seconds: float = Field(gt=0)
 
 
+class MacroEvent(BaseModel):
+    date: dt.date
+    name: str
+
+
 class StrategyConfig(BaseModel):
     symbols: list[str] = Field(min_length=1)
     context_symbols: list[str] = Field(default_factory=list)
@@ -87,6 +93,7 @@ class StrategyConfig(BaseModel):
     sizing: Sizing
     fees: Fees
     ai: AIConfig
+    macro_events: list[MacroEvent] = Field(default_factory=list)
 
 
 class Settings(BaseModel):

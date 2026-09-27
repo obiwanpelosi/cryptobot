@@ -12,11 +12,14 @@ from binance import BinanceSocketManager
 from telegram.ext import Application
 
 from bot.exchange.client import BinanceClient
-from bot.exchange.models import QUOTE_ASSET, portfolio_value_usdt
+from bot.exchange.models import QUOTE_ASSET, Candle, portfolio_value_usdt
 from bot.exchange.streams import PriceStream
 from bot.logging_setup import setup_logging
+from bot.market.candles import CandleStore
+from bot.market.context import MarketContext
+from bot.market.snapshot import SnapshotBuilder
 from bot.settings import PROJECT_ROOT, Settings, load_settings
-from bot.telegram.handlers import Deps, build_application
+from bot.telegram.handlers import Deps, build_application, polling_error
 from bot.telegram.messages import base_asset, fmt_price
 from bot.telegram.notifier import Notifier, NullNotifier
 
@@ -104,6 +107,29 @@ async def reporter(
         elapsed += PRICE_REPORT_SECONDS
 
 
+class CandleSync:
+    """Feeds closed candles into the store and backfills after reconnects or gaps."""
+
+    def __init__(self, store: CandleStore, client: BinanceClient):
+        self.store = store
+        self.client = client
+        self.connects = 0
+        self._task: asyncio.Task | None = None
+
+    def on_candle(self, symbol: str, tf: str, candle: Candle) -> None:
+        if self.store.add(symbol, tf, candle):
+            self.schedule_backfill()
+
+    def on_connect(self) -> None:
+        self.connects += 1
+        if self.connects > 1:  # the first connect follows a fresh load
+            self.schedule_backfill()
+
+    def schedule_backfill(self) -> None:
+        if self._task is None or self._task.done():
+            self._task = asyncio.create_task(self.store.backfill(self.client), name="backfill")
+
+
 async def start_telegram(settings: Settings, deps: Deps) -> Application | None:
     s = settings.secrets
     if not s.telegram_bot_token:
@@ -116,7 +142,7 @@ async def start_telegram(settings: Settings, deps: Deps) -> Application | None:
     if app.post_init:
         await app.post_init(app)
     await app.start()
-    await app.updater.start_polling(drop_pending_updates=True)
+    await app.updater.start_polling(drop_pending_updates=True, error_callback=polling_error)
     log.info("Telegram bot @%s polling", app.bot.username)
     return app
 
@@ -154,11 +180,30 @@ async def run(settings: Settings) -> None:
         await client.check_permissions()
         await client.check_symbols(all_symbols)
 
-        bsm = BinanceSocketManager(client.raw)
-        stream = PriceStream(all_symbols, bsm.multiplex_socket)
-        stream.seed(await client.get_24h_tickers(all_symbols))
+        store = CandleStore(all_symbols, cfg.timeframes, cfg.history_candles)
+        await store.load(client)
+        market = MarketContext(client, cfg.symbols, cfg.macro_events)
+        await market.refresh()
 
-        deps = Deps(client=client, stream=stream, settings=settings)
+        sync = CandleSync(store, client)
+        bsm = BinanceSocketManager(client.raw)
+        stream = PriceStream(
+            all_symbols,
+            bsm.multiplex_socket,
+            kline_intervals=cfg.timeframes,
+            on_candle=sync.on_candle,
+            on_connect=sync.on_connect,
+        )
+        stream.seed(await client.get_24h_tickers(all_symbols))
+        snapshots = SnapshotBuilder(
+            store,
+            market,
+            stream.ticks,
+            high_lookback_hours=cfg.dip_rules.high_lookback_hours,
+            btc_symbol=cfg.context_symbols[0] if cfg.context_symbols else None,
+        )
+
+        deps = Deps(client=client, stream=stream, settings=settings, snapshots=snapshots)
         app = await start_telegram(settings, deps)
         if app is not None:
             notifier = Notifier(app.bot, s.telegram_allowed_chat_ids, cfg.mode)
@@ -174,6 +219,7 @@ async def run(settings: Settings) -> None:
         tasks = [
             asyncio.create_task(stream.run(), name="price-stream"),
             asyncio.create_task(reporter(client, stream, assets, notifier), name="reporter"),
+            asyncio.create_task(market.run(), name="market-context"),
         ]
         stopper = asyncio.create_task(stop.wait())
         done, _ = await asyncio.wait([*tasks, stopper], return_when=asyncio.FIRST_COMPLETED)

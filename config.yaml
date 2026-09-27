@@ -34,3 +34,8 @@ ai:
   strong_model: claude-sonnet-5            # entry and hold/sell decisions
   max_calls_per_hour: 20
   timeout_seconds: 60
+
+# Upcoming macro events (optional, maintained by hand). Shown in /analysis within 7 days.
+macro_events: []
+#  - {date: 2026-10-28, name: FOMC decision}
+#  - {date: 2026-10-14, name: US CPI}

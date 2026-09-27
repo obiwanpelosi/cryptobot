@@ -8,6 +8,7 @@ from dataclasses import dataclass
 
 from telegram import BotCommand, Update
 from telegram.constants import ParseMode
+from telegram.error import Conflict, NetworkError
 from telegram.ext import (
     Application,
     ApplicationHandlerStop,
@@ -19,9 +20,11 @@ from telegram.ext import (
 from bot.exchange.client import BinanceClient
 from bot.exchange.models import QUOTE_ASSET
 from bot.exchange.streams import PriceStream
+from bot.market.snapshot import SnapshotBuilder
 from bot.settings import Settings
 from bot.telegram.messages import (
     COMMANDS,
+    analysis_message,
     balance_message,
     base_asset,
     price_message,
@@ -40,6 +43,7 @@ class Deps:
     client: BinanceClient
     stream: PriceStream
     settings: Settings
+    snapshots: SnapshotBuilder | None = None
     notifier: Notifier | None = None
     last_error_notice: float = float("-inf")
 
@@ -99,6 +103,29 @@ async def balance_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     await _reply(update, context, balance_message(balances, prices))
 
 
+def resolve_symbol(arg: str, symbols: list[str]) -> str | None:
+    wanted = arg.strip().upper()
+    for symbol in symbols:
+        if wanted in (symbol, base_asset(symbol)):
+            return symbol
+    return None
+
+
+async def analysis_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    deps = _deps(context)
+    symbols = deps.settings.strategy.symbols
+    valid = ", ".join(base_asset(s) for s in symbols)
+    symbol = resolve_symbol(context.args[0], symbols) if context.args else None
+    if symbol is None:
+        await _reply(update, context, f"Usage: /analysis &lt;SYMBOL&gt;. One of: {valid}")
+        return
+    snapshot = deps.snapshots.build(symbol) if deps.snapshots else None
+    if snapshot is None:
+        await _reply(update, context, "Still warming up (loading candles). Try again shortly.")
+        return
+    await _reply(update, context, analysis_message(snapshot))
+
+
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     log.error("Unhandled error in Telegram handler", exc_info=context.error)
     deps: Deps | None = context.bot_data.get("deps")
@@ -109,6 +136,27 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
         return
     deps.last_error_notice = now
     await deps.notifier.send(f"⚠️ Error: {type(context.error).__name__}")
+
+
+_last_polling_warning: dict[str, float] = {}
+
+
+def polling_error(exc: Exception) -> None:
+    """Error callback for getUpdates polling: one readable line instead of a traceback."""
+    if isinstance(exc, Conflict):
+        key, text = "conflict", (
+            "Telegram Conflict: another instance of this bot is already running with the "
+            "same token. Stop the other one (only one poller is allowed)."
+        )
+    elif isinstance(exc, NetworkError):
+        key, text = "network", f"Telegram polling network error: {exc}"
+    else:
+        log.error("Telegram polling error", exc_info=exc)
+        return
+    now = time.monotonic()
+    if now - _last_polling_warning.get(key, float("-inf")) >= 60:
+        _last_polling_warning[key] = now
+        log.warning(text)
 
 
 async def _post_init(app: Application) -> None:
@@ -122,6 +170,7 @@ def build_application(token: str, deps: Deps) -> Application:
     app.add_handler(CommandHandler("start", start_cmd))
     app.add_handler(CommandHandler("price", price_cmd))
     app.add_handler(CommandHandler("balance", balance_cmd))
+    app.add_handler(CommandHandler("analysis", analysis_cmd))
     app.add_error_handler(error_handler)
     return app
 
