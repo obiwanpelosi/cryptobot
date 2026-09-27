@@ -19,7 +19,12 @@ from bot.market.candles import CandleStore
 from bot.market.context import MarketContext
 from bot.market.snapshot import SnapshotBuilder
 from bot.settings import PROJECT_ROOT, Settings, load_settings
-from bot.telegram.handlers import Deps, build_application, polling_error
+from bot.signals.engine import SignalEngine
+from bot.signals.sizing import SymbolFilters
+from bot.storage.db import Repo, make_engine
+from bot.telegram.alerts import entry_keyboard
+from bot.telegram.deps import Deps
+from bot.telegram.handlers import build_application, polling_error
 from bot.telegram.messages import base_asset, fmt_price
 from bot.telegram.notifier import Notifier, NullNotifier
 
@@ -114,11 +119,14 @@ class CandleSync:
         self.store = store
         self.client = client
         self.connects = 0
+        self.engine: SignalEngine | None = None
         self._task: asyncio.Task | None = None
 
     def on_candle(self, symbol: str, tf: str, candle: Candle) -> None:
         if self.store.add(symbol, tf, candle):
             self.schedule_backfill()
+        if self.engine is not None:
+            self.engine.on_candle_closed(symbol, tf)
 
     def on_connect(self) -> None:
         self.connects += 1
@@ -127,7 +135,14 @@ class CandleSync:
 
     def schedule_backfill(self) -> None:
         if self._task is None or self._task.done():
-            self._task = asyncio.create_task(self.store.backfill(self.client), name="backfill")
+            self._task = asyncio.create_task(self._backfill(), name="backfill")
+
+    async def _backfill(self) -> None:
+        """Backfill, then treat candles that arrived via REST like live closes."""
+        advanced = await self.store.backfill(self.client)
+        if self.engine is not None:
+            for symbol, tf in sorted(advanced):
+                self.engine.on_candle_closed(symbol, tf)
 
 
 async def start_telegram(settings: Settings, deps: Deps) -> Application | None:
@@ -178,7 +193,11 @@ async def run(settings: Settings) -> None:
     crash: BaseException | None = None
     try:
         await client.check_permissions()
-        await client.check_symbols(all_symbols)
+        symbol_info = await client.check_symbols(all_symbols)
+        filters = {
+            sym: SymbolFilters.from_exchange_info(symbol_info[sym]) for sym in cfg.symbols
+        }
+        repo = Repo(make_engine(PROJECT_ROOT / "data" / "bot.db"))
 
         store = CandleStore(all_symbols, cfg.timeframes, cfg.history_candles)
         await store.load(client)
@@ -203,11 +222,27 @@ async def run(settings: Settings) -> None:
             btc_symbol=cfg.context_symbols[0] if cfg.context_symbols else None,
         )
 
-        deps = Deps(client=client, stream=stream, settings=settings, snapshots=snapshots)
+        deps = Deps(
+            client=client,
+            stream=stream,
+            settings=settings,
+            snapshots=snapshots,
+            repo=repo,
+            filters=filters,
+        )
         app = await start_telegram(settings, deps)
         if app is not None:
             notifier = Notifier(app.bot, s.telegram_allowed_chat_ids, cfg.mode)
             deps.notifier = notifier
+        sync.engine = SignalEngine(
+            strategy=cfg,
+            snapshots=snapshots,
+            repo=repo,
+            balances=client,
+            filters=filters,
+            notifier=notifier,
+            keyboard=entry_keyboard,
+        )
         watching = ", ".join(base_asset(sym) for sym in all_symbols)
         await notifier.send(f"🟢 cryptobot started. Mode: {cfg.mode}. Watching {watching}.")
 

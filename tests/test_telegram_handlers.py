@@ -9,7 +9,7 @@ from telegram.ext import ApplicationHandlerStop
 from bot.exchange.models import Balance, Tick
 from bot.settings import Secrets, Settings, load_strategy
 from bot.telegram import handlers
-from bot.telegram.handlers import Deps
+from bot.telegram.deps import Deps
 
 ALLOWED = 111
 
@@ -172,3 +172,14 @@ def test_polling_conflict_logged_once_per_minute(caplog, monkeypatch):
         handlers.polling_error(Conflict("later"))
     assert caplog.text.count("another instance of this bot") == 2
     assert "Traceback" not in caplog.text
+
+
+def test_application_builds_with_all_handlers():
+    from telegram.ext import CallbackQueryHandler, CommandHandler, ConversationHandler
+
+    app = handlers.build_application("123456:TEST-TOKEN", make_deps())
+    registered = [h for group in app.handlers.values() for h in group]
+    commands = {c for h in registered if isinstance(h, CommandHandler) for c in h.commands}
+    assert {"start", "price", "balance", "analysis", "pause", "resume"} <= commands
+    assert any(isinstance(h, ConversationHandler) for h in registered)
+    assert sum(isinstance(h, CallbackQueryHandler) for h in registered) == 2  # cfm, cxl

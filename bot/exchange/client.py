@@ -113,15 +113,23 @@ class BinanceClient:
             log.warning("API key is not IP-restricted. Restrict it to your server's IP if you can.")
         return perms
 
-    async def check_symbols(self, symbols: Iterable[str]) -> None:
-        """Raise if any configured symbol doesn't exist or isn't trading."""
+    async def check_symbols(self, symbols: Iterable[str]) -> dict[str, dict[str, Any]]:
+        """Raise if any configured symbol doesn't exist or isn't trading.
+
+        Returns each symbol's exchange-info entry (used for price/quantity filters).
+        """
+        symbols = list(symbols)
         info = await self._call(self._client.get_exchange_info)
-        status = {s["symbol"]: s.get("status") for s in info.get("symbols", [])}
-        bad = [f"{sym} ({status.get(sym, 'not found')})" for sym in symbols
-               if status.get(sym) != "TRADING"]
+        by_symbol = {s["symbol"]: s for s in info.get("symbols", [])}
+        bad = [
+            f"{sym} ({by_symbol[sym].get('status') if sym in by_symbol else 'not found'})"
+            for sym in symbols
+            if by_symbol.get(sym, {}).get("status") != "TRADING"
+        ]
         if bad:
             raise RuntimeError(f"Symbols not tradable on Binance spot: {', '.join(bad)}")
         log.info("Symbols OK: %s", ", ".join(symbols))
+        return {sym: by_symbol[sym] for sym in symbols}
 
     async def get_balances(
         self, assets: Iterable[str] = ("USDT", "SOL", "LINK"), *, force: bool = False

@@ -10,6 +10,9 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 
+# Local test configs (e.g. config.loose.yaml)
+config.*.yaml
+
 # Runtime data
 *.db
 *.sqlite

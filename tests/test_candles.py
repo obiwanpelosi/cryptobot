@@ -94,3 +94,16 @@ async def test_backfill_failure_keeps_existing(caplog):
         await store.backfill(Failing())
     assert len(store.frame("SOLUSDT", TF)) == 10
     assert "Backfill failed" in caplog.text
+
+
+async def test_backfill_reports_advanced_keys():
+    store = make_store(10)
+    client = FakeKlines({("SOLUSDT", TF): [candle(i) for i in range(12)]})
+    assert await store.backfill(client) == {("SOLUSDT", TF)}
+    assert await store.backfill(client) == set()  # nothing new the second time
+
+
+async def test_backfill_older_only_is_not_advanced():
+    store = make_store(10)
+    client = FakeKlines({("SOLUSDT", TF): [candle(i) for i in range(10)]})
+    assert await store.backfill(client) == set()

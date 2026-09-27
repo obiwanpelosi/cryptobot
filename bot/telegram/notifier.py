@@ -19,18 +19,25 @@ class Notifier:
         self._chat_ids = list(chat_ids)
         self._mode = mode
 
-    async def send(self, text: str) -> None:
+    async def send(self, text: str, reply_markup: Any = None) -> int:
+        """Send to every allowed chat. Returns how many sends succeeded."""
+        sent = 0
         for chat_id in self._chat_ids:
             try:
                 await self._bot.send_message(
-                    chat_id=chat_id, text=with_mode(text, self._mode), parse_mode=ParseMode.HTML
+                    chat_id=chat_id,
+                    text=with_mode(text, self._mode),
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=reply_markup,
                 )
+                sent += 1
             except Exception as exc:
                 log.warning("Telegram send to %s failed: %s", chat_id, exc)
+        return sent
 
 
 class NullNotifier:
     """Used when no Telegram token is configured."""
 
-    async def send(self, text: str) -> None:
-        return None
+    async def send(self, text: str, reply_markup: Any = None) -> int:
+        return 0

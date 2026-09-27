@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import os
 from pathlib import Path
 from typing import Annotated, Literal
 
@@ -44,11 +45,13 @@ class Secrets(BaseSettings):
 
 
 class DipRules(BaseModel):
-    min_drop_from_high_pct: float = Field(gt=0)
+    """A threshold set to null (None) disables that condition."""
+
+    min_drop_from_high_pct: float | None = Field(default=None, gt=0)
     high_lookback_hours: int = Field(gt=0)
-    rsi_1h_max: float = Field(gt=0, lt=100)
+    rsi_1h_max: float | None = Field(default=None, gt=0, lt=100)
     require_lower_bollinger_4h: bool = False
-    btc_crash_guard_pct_1h: float = Field(gt=0)
+    btc_crash_guard_pct_1h: float | None = Field(default=None, gt=0)
     cooldown_minutes_per_symbol: int = Field(ge=0)
 
 
@@ -107,12 +110,21 @@ def load_strategy(config_path: str | Path = PROJECT_ROOT / "config.yaml") -> Str
     return StrategyConfig.model_validate(raw)
 
 
+def default_config_path() -> Path:
+    """config.yaml, or the file named by the BOT_CONFIG env var (e.g. a loosened test config)."""
+    override = os.environ.get("BOT_CONFIG")
+    if not override:
+        return PROJECT_ROOT / "config.yaml"
+    path = Path(override)
+    return path if path.is_absolute() else PROJECT_ROOT / path
+
+
 def load_settings(
-    config_path: str | Path = PROJECT_ROOT / "config.yaml",
+    config_path: str | Path | None = None,
     env_file: str | Path | None = PROJECT_ROOT / ".env",
 ) -> Settings:
     """Load everything once at startup; raises pydantic.ValidationError on bad config."""
     return Settings(
         secrets=Secrets(_env_file=env_file),
-        strategy=load_strategy(config_path),
+        strategy=load_strategy(config_path or default_config_path()),
     )

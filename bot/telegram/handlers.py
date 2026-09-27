@@ -4,10 +4,8 @@ from __future__ import annotations
 
 import logging
 import time
-from dataclasses import dataclass
 
 from telegram import BotCommand, Update
-from telegram.constants import ParseMode
 from telegram.error import Conflict, NetworkError
 from telegram.ext import (
     Application,
@@ -17,11 +15,8 @@ from telegram.ext import (
     TypeHandler,
 )
 
-from bot.exchange.client import BinanceClient
-from bot.exchange.models import QUOTE_ASSET
-from bot.exchange.streams import PriceStream
-from bot.market.snapshot import SnapshotBuilder
-from bot.settings import Settings
+from bot.telegram import alerts
+from bot.telegram.deps import Deps, get_deps, reply
 from bot.telegram.messages import (
     COMMANDS,
     analysis_message,
@@ -29,46 +24,16 @@ from bot.telegram.messages import (
     base_asset,
     price_message,
     start_message,
-    with_mode,
 )
-from bot.telegram.notifier import Notifier
 
 log = logging.getLogger(__name__)
 
 ERROR_NOTICE_INTERVAL = 300
 
 
-@dataclass
-class Deps:
-    client: BinanceClient
-    stream: PriceStream
-    settings: Settings
-    snapshots: SnapshotBuilder | None = None
-    notifier: Notifier | None = None
-    last_error_notice: float = float("-inf")
-
-    @property
-    def mode(self) -> str:
-        return self.settings.strategy.mode
-
-    @property
-    def assets(self) -> list[str]:
-        return [QUOTE_ASSET] + [base_asset(s) for s in self.settings.strategy.symbols]
-
-
-def _deps(context: ContextTypes.DEFAULT_TYPE) -> Deps:
-    return context.bot_data["deps"]
-
-
-async def _reply(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str) -> None:
-    await update.effective_message.reply_text(
-        with_mode(text, _deps(context).mode), parse_mode=ParseMode.HTML
-    )
-
-
 async def guard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Runs before every other handler. Silently drops updates from non-allowlisted chats."""
-    allowed = _deps(context).settings.secrets.telegram_allowed_chat_ids
+    allowed = get_deps(context).settings.secrets.telegram_allowed_chat_ids
     chat = update.effective_chat
     if chat is not None and chat.id in allowed:
         return
@@ -82,25 +47,26 @@ async def guard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    deps = _deps(context)
-    await _reply(update, context, start_message(deps.mode, deps.stream.symbols))
+    deps = get_deps(context)
+    text = start_message(deps.mode, deps.stream.symbols, paused=alerts.is_paused(deps))
+    await reply(update, context, text)
 
 
 async def price_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    stream = _deps(context).stream
-    await _reply(update, context, price_message(stream.symbols, stream.ticks))
+    stream = get_deps(context).stream
+    await reply(update, context, price_message(stream.symbols, stream.ticks))
 
 
 async def balance_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    deps = _deps(context)
+    deps = get_deps(context)
     try:
         balances = await deps.client.get_balances(deps.assets)
     except Exception:
         log.exception("/balance failed")
-        await _reply(update, context, "Couldn't fetch balances right now. Try again shortly.")
+        await reply(update, context, "Couldn't fetch balances right now. Try again shortly.")
         return
     prices = {s: t.price for s, t in deps.stream.ticks.items()}
-    await _reply(update, context, balance_message(balances, prices))
+    await reply(update, context, balance_message(balances, prices))
 
 
 def resolve_symbol(arg: str, symbols: list[str]) -> str | None:
@@ -112,18 +78,18 @@ def resolve_symbol(arg: str, symbols: list[str]) -> str | None:
 
 
 async def analysis_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    deps = _deps(context)
+    deps = get_deps(context)
     symbols = deps.settings.strategy.symbols
     valid = ", ".join(base_asset(s) for s in symbols)
     symbol = resolve_symbol(context.args[0], symbols) if context.args else None
     if symbol is None:
-        await _reply(update, context, f"Usage: /analysis &lt;SYMBOL&gt;. One of: {valid}")
+        await reply(update, context, f"Usage: /analysis &lt;SYMBOL&gt;. One of: {valid}")
         return
     snapshot = deps.snapshots.build(symbol) if deps.snapshots else None
     if snapshot is None:
-        await _reply(update, context, "Still warming up (loading candles). Try again shortly.")
+        await reply(update, context, "Still warming up (loading candles). Try again shortly.")
         return
-    await _reply(update, context, analysis_message(snapshot))
+    await reply(update, context, analysis_message(snapshot))
 
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -171,6 +137,7 @@ def build_application(token: str, deps: Deps) -> Application:
     app.add_handler(CommandHandler("price", price_cmd))
     app.add_handler(CommandHandler("balance", balance_cmd))
     app.add_handler(CommandHandler("analysis", analysis_cmd))
+    alerts.register(app)
     app.add_error_handler(error_handler)
     return app
 

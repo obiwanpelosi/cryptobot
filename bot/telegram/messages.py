@@ -9,6 +9,8 @@ from html import escape
 
 from bot.exchange.models import QUOTE_ASSET, Balance, Tick, portfolio_value_usdt
 from bot.market.snapshot import MarketSnapshot
+from bot.signals.rules import RuleResult
+from bot.signals.sizing import Suggestion
 
 STALE_TICK_SECONDS = 60
 
@@ -17,6 +19,8 @@ COMMANDS: list[tuple[str, str]] = [
     ("price", "Current SOL, LINK, BTC prices and 24h change"),
     ("balance", "USDT, SOL, LINK balances and total value"),
     ("analysis", "Indicator summary, e.g. /analysis SOL"),
+    ("pause", "Pause dip alerts (open positions still monitored)"),
+    ("resume", "Resume dip alerts"),
 ]
 
 
@@ -43,12 +47,13 @@ def with_mode(text: str, mode: str) -> str:
     return f"[PAPER] {text}" if mode == "paper" else text
 
 
-def start_message(mode: str, symbols: Iterable[str]) -> str:
+def start_message(mode: str, symbols: Iterable[str], paused: bool = False) -> str:
     watching = ", ".join(base_asset(s) for s in symbols)
     lines = [
         "<b>cryptobot</b> — dip-buying alerts (advisory only)",
         f"Mode: <code>{escape(mode)}</code>",
         f"Watching: {escape(watching)}",
+        f"Alerts: {'⏸ paused (/resume)' if paused else '▶️ on'}",
         "",
         "<b>Commands</b>",
         *(f"/{name} — {escape(desc)}" for name, desc in COMMANDS),
@@ -156,4 +161,68 @@ def analysis_message(snap: MarketSnapshot) -> str:
         lines.append(f"📅 {event.date.isoformat()} {escape(event.name)}")
 
     lines.append("<i>Indicators use closed candles; the live candle isn't included.</i>")
+    return "\n".join(lines)
+
+
+def _fmt_check_value(value: float | None) -> str:
+    return "n/a" if value is None else f"{value:.2f}"
+
+
+def entry_alert(
+    snap: MarketSnapshot, result: RuleResult, suggestion: Suggestion | None
+) -> str:
+    name = escape(base_asset(snap.symbol))
+    lines = []
+    if result.high_risk:
+        lines.append(
+            f"⚠️ <b>HIGH RISK</b>: BTC {fmt_pct(result.btc_change_1h_pct)} in the last hour"
+        )
+    lines.append(f"📉 <b>Dip signal: {name}</b> at {fmt_price(snap.price)}")
+    lines.append("")
+    lines.append("<b>Why</b>")
+    for c in result.checks:
+        mark = "✓" if c.passed else "✗"
+        lines.append(
+            f"{escape(c.label)}: {_fmt_check_value(c.value)}"
+            f" ({escape(c.op)} {c.threshold:g}) {mark}"
+        )
+    if snap.btc:
+        b = snap.btc
+        lines.append(
+            f"BTC {fmt_price(b.price)}: 1h {fmt_pct(b.change_1h_pct)}, 24h"
+            f" {fmt_pct(b.change_24h_pct)} · trend 4h {b.trend_4h or '-'} / 1d {b.trend_1d or '-'}"
+        )
+
+    lines.append("")
+    lines.append("<b>Suggestion</b>")
+    if suggestion is None:
+        lines.append("Sizing unavailable (couldn't fetch balances). Check /balance.")
+    elif suggestion.too_small:
+        lines.append(f"No trade suggested: {escape(suggestion.reason or '')}")
+        if suggestion.stop > 0:
+            lines.append(
+                f"Stop would be {fmt_price(suggestion.stop)}"
+                f" (-{suggestion.stop_distance_pct:.1f}%)"
+            )
+    else:
+        cap = ""
+        if suggestion.capped_by == "max_position_pct":
+            cap = " (capped at max position %)"
+        elif suggestion.capped_by == "available_usdt":
+            cap = " (capped at available USDT)"
+        lines.append(
+            f"Size: <b>{suggestion.size_usdt:,.2f} USDT</b>"
+            f" ≈ {suggestion.qty.normalize():f} {name}{cap}"
+        )
+        lines.append(
+            f"Stop: {fmt_price(suggestion.stop)} (-{suggestion.stop_distance_pct:.1f}%)"
+            f" · loss if stopped: {suggestion.loss_at_stop_usdt:,.2f} USDT"
+        )
+        for t in suggestion.targets:
+            lines.append(
+                f"Target +{t.pct:g}% @ {fmt_price(t.price)} → +{t.gain_usdt:,.2f} USDT"
+            )
+        lines.append("<i>All P/L after fees.</i>")
+    lines.append("")
+    lines.append("<i>Advisory only. You place orders on Binance yourself.</i>")
     return "\n".join(lines)

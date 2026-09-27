@@ -6,7 +6,7 @@ mode: paper            # paper | live-advisory | live-execution (later phase)
 timeframes: [15m, 1h, 4h, 1d]
 history_candles: 500   # per timeframe, loaded on startup
 
-dip_rules:
+dip_rules:                       # set a threshold to null to disable that condition
   min_drop_from_high_pct: 6      # drop from recent high
   high_lookback_hours: 72
   rsi_1h_max: 35

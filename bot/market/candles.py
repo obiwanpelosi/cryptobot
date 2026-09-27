@@ -100,10 +100,19 @@ class CandleStore:
             return "merged"
         return "unchanged"
 
-    async def backfill(self, client: KlineSource) -> None:
-        """Fill any gap after a disconnect. Full reload for a key if the gap exceeds the limit."""
+    def _last_open(self, key: tuple[str, str]) -> int | None:
+        frame = self._frames.get(key)
+        return int(frame.index[-1]) if frame is not None and len(frame) else None
+
+    async def backfill(self, client: KlineSource) -> set[tuple[str, str]]:
+        """Fill any gap after a disconnect. Full reload for a key if the gap exceeds the limit.
+
+        Returns the (symbol, tf) keys whose newest closed candle advanced, so callers can
+        react to candle closes that arrived via REST instead of the WebSocket.
+        """
         async with self._backfill_lock:
             keys = self.keys()
+            before = {key: self._last_open(key) for key in keys}
             results = await asyncio.gather(
                 *(client.get_klines(s, tf, limit=BACKFILL_LIMIT) for s, tf in keys),
                 return_exceptions=True,
@@ -120,3 +129,9 @@ class CandleStore:
                     outcome = "reloaded"
                 if outcome in ("merged", "reloaded"):
                     log.info("Backfill %s %s: %s", symbol, tf, outcome)
+            advanced = set()
+            for key in keys:
+                after = self._last_open(key)
+                if after is not None and (before[key] is None or after > before[key]):
+                    advanced.add(key)
+            return advanced
