@@ -21,6 +21,8 @@ from bot.telegram.messages import base_asset, with_mode
 from bot.telegram.notifier import Notifier
 
 if TYPE_CHECKING:
+    from bot.ai.advisor import AIAdvisor
+    from bot.ai.models import ModelCatalog
     from bot.positions.tracker import PositionTracker
 
 
@@ -34,6 +36,8 @@ class Deps:
     filters: dict[str, SymbolFilters] = field(default_factory=dict)
     notifier: Notifier | None = None
     tracker: PositionTracker | None = None
+    advisor: AIAdvisor | None = None
+    catalog: ModelCatalog | None = None
     last_error_notice: float = float("-inf")
 
     @property
@@ -51,8 +55,8 @@ def get_deps(context: ContextTypes.DEFAULT_TYPE) -> Deps:
 
 async def reply(
     update: Update, context: ContextTypes.DEFAULT_TYPE, text: str, reply_markup=None
-) -> None:
-    await update.effective_message.reply_text(
+):
+    return await update.effective_message.reply_text(
         with_mode(text, get_deps(context).mode),
         parse_mode=ParseMode.HTML,
         reply_markup=reply_markup,

@@ -19,25 +19,41 @@ class Notifier:
         self._chat_ids = list(chat_ids)
         self._mode = mode
 
-    async def send(self, text: str, reply_markup: Any = None) -> int:
-        """Send to every allowed chat. Returns how many sends succeeded."""
-        sent = 0
+    async def send(self, text: str, reply_markup: Any = None) -> list[Any]:
+        """Send to every allowed chat. Returns the sent messages (empty if all failed)."""
+        sent = []
         for chat_id in self._chat_ids:
             try:
-                await self._bot.send_message(
-                    chat_id=chat_id,
-                    text=with_mode(text, self._mode),
-                    parse_mode=ParseMode.HTML,
-                    reply_markup=reply_markup,
+                sent.append(
+                    await self._bot.send_message(
+                        chat_id=chat_id,
+                        text=with_mode(text, self._mode),
+                        parse_mode=ParseMode.HTML,
+                        reply_markup=reply_markup,
+                    )
                 )
-                sent += 1
             except Exception as exc:
                 log.warning("Telegram send to %s failed: %s", chat_id, exc)
         return sent
+
+    async def edit(self, messages: Iterable[Any], text: str, reply_markup: Any = None) -> None:
+        """Replace the text of previously sent messages, keeping the given buttons."""
+        for message in messages:
+            try:
+                await message.edit_text(
+                    with_mode(text, self._mode),
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=reply_markup,
+                )
+            except Exception as exc:
+                log.warning("Telegram edit failed: %s", exc)
 
 
 class NullNotifier:
     """Used when no Telegram token is configured."""
 
-    async def send(self, text: str, reply_markup: Any = None) -> int:
-        return 0
+    async def send(self, text: str, reply_markup: Any = None) -> list[Any]:
+        return []
+
+    async def edit(self, messages: Iterable[Any], text: str, reply_markup: Any = None) -> None:
+        return None

@@ -28,12 +28,21 @@ fees:
   taker_pct: 0.1                 # include in all P/L calculations
 
 ai:
-  enabled: false                 # turned on in Phase 6
-  provider: anthropic
-  light_model: claude-haiku-4-5-20251001   # routine checks
-  strong_model: claude-sonnet-5            # entry and hold/sell decisions
-  max_calls_per_hour: 20
+  enabled: false                 # set true once OPENROUTER_API_KEY is in .env
+  provider: openrouter           # one key, many models: https://openrouter.ai/models
+  strong_model: anthropic/claude-sonnet-5   # entry and target/stop decisions
+  light_model: anthropic/claude-haiku-4.5   # near-stop re-checks and /analysis
+  # Default models for `uv run python -m bot.ai.compare` experiments.
+  candidates:
+    - anthropic/claude-sonnet-5
+    - anthropic/claude-haiku-4.5
+    - openai/gpt-5.4-mini
+    - google/gemini-3.5-flash
+    - deepseek/deepseek-v4-pro
+  shadow_models: []              # also asked on every live call; logged, never shown
+  max_calls_per_hour: 20         # includes shadow calls
   timeout_seconds: 60
+  max_output_tokens: 1500
 
 # Upcoming macro events (optional, maintained by hand). Shown in /analysis within 7 days.
 macro_events: []

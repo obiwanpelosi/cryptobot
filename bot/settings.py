@@ -31,8 +31,7 @@ class Secrets(BaseSettings):
     )
     telegram_bot_token: SecretStr | None = None
     telegram_allowed_chat_ids: Annotated[list[int], NoDecode] = Field(default_factory=list)
-    anthropic_api_key: SecretStr | None = None
-    openai_api_key: SecretStr | None = None
+    openrouter_api_key: SecretStr | None = None
 
     @field_validator("telegram_allowed_chat_ids", mode="before")
     @classmethod
@@ -73,11 +72,14 @@ class Fees(BaseModel):
 
 class AIConfig(BaseModel):
     enabled: bool = False
-    provider: str = "anthropic"
+    provider: Literal["openrouter"] = "openrouter"
     light_model: str
     strong_model: str
+    candidates: list[str] = Field(default_factory=list)  # default set for `bot.ai.compare`
+    shadow_models: list[str] = Field(default_factory=list)  # logged only, for comparison
     max_calls_per_hour: int = Field(gt=0)
     timeout_seconds: float = Field(gt=0)
+    max_output_tokens: int = Field(default=1500, gt=0)
 
 
 class MacroEvent(BaseModel):

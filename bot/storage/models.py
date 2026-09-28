@@ -64,6 +64,30 @@ class AlertSent(Base):
     ts: Mapped[int] = mapped_column(Integer)
 
 
+class AICall(Base):
+    """Every AI request, successful or not (requirements.md §5.9)."""
+
+    __tablename__ = "ai_calls"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    ts: Mapped[int] = mapped_column(Integer, index=True)
+    provider: Mapped[str] = mapped_column(String(20))
+    model: Mapped[str] = mapped_column(String(100))  # requested
+    served_model: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    purpose: Mapped[str] = mapped_column(String(30))  # entry | exit | analysis | experiment
+    role: Mapped[str] = mapped_column(String(10), default="primary")  # primary | shadow
+    prompt: Mapped[str] = mapped_column(Text)
+    response: Mapped[str | None] = mapped_column(Text, nullable=True)
+    latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    tokens_in: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    tokens_out: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
+    valid_json: Mapped[bool] = mapped_column(Boolean, default=False)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    signal_id: Mapped[int | None] = mapped_column(ForeignKey("signals.id"), nullable=True)
+    position_id: Mapped[int | None] = mapped_column(ForeignKey("positions.id"), nullable=True)
+
+
 class BotState(Base):
     __tablename__ = "bot_state"
 

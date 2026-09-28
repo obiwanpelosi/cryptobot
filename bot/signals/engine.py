@@ -67,6 +67,8 @@ class SignalEngine:
         self.delay = delay
         self._locks: dict[str, asyncio.Lock] = {}
         self._tasks: set[asyncio.Task] = set()
+        self.advisor: Any = None  # Phase 6: AIAdvisor, or None for rule-only alerts
+        self._portfolio: dict[str, Any] = {}
 
     @property
     def assets(self) -> list[str]:
@@ -153,6 +155,7 @@ class SignalEngine:
             return None
         prices = {s: t.price for s, t in self.snapshots.ticks.items()}
         total, _ = portfolio_value_usdt(balances, prices)
+        self._portfolio = self.portfolio_summary(total, balances[QUOTE_ASSET].free, prices)
         return suggest(
             entry=Decimal(str(price)),
             atr_4h=Decimal(str(atr_4h)),
@@ -164,11 +167,79 @@ class SignalEngine:
             filters=filters,
         )
 
+    def portfolio_summary(self, total, available, prices) -> dict[str, Any]:
+        """Compact account state for the AI: totals and open positions with P/L."""
+        from bot.positions.logic import position_pnl
+        from bot.signals.sizing import fee_fraction
+
+        fee = float(fee_fraction(self.cfg.fees))
+        open_positions = []
+        for p in self.repo.open_positions():
+            price = prices.get(p.symbol)
+            pnl_pct = (
+                position_pnl(p.amount_usdt, p.quantity, float(price), fee)[1]
+                if price is not None
+                else None
+            )
+            open_positions.append(
+                {
+                    "symbol": p.symbol,
+                    "amount_usdt": round(p.amount_usdt, 2),
+                    "pnl_pct": None if pnl_pct is None else round(pnl_pct, 2),
+                }
+            )
+        return {
+            "total_value_usdt": round(float(total), 2),
+            "available_usdt": round(float(available), 2),
+            "open_positions": open_positions,
+        }
+
     async def _send_alert(
         self, signal: Signal, snapshot, result: RuleResult, suggestion: Suggestion | None
     ) -> None:
         text = entry_alert(snapshot, result, suggestion)
         has_suggestion = suggestion is not None and not suggestion.too_small
         markup = self.keyboard(signal.id, has_suggestion) if self.keyboard else None
-        if await self.notifier.send(text, reply_markup=markup):
-            self.repo.mark_alert_sent(signal.id)
+        sent = await self.notifier.send(text, reply_markup=markup)
+        if not sent:
+            return
+        self.repo.mark_alert_sent(signal.id)
+        if self.advisor is not None:
+            task = asyncio.create_task(
+                self._ai_followup(signal, snapshot, result, suggestion, sent, text, markup)
+            )
+            self._tasks.add(task)
+            task.add_done_callback(self._tasks.discard)
+
+    async def _ai_followup(self, signal, snapshot, result, suggestion, sent, text, markup):
+        """Ask the AI about a delivered alert, then append its advice to the same message."""
+        from bot.ai.prompts import entry_context, trade_history
+        from bot.telegram.messages import ai_entry_section, ai_skipped_line
+
+        try:
+            history = trade_history(self.repo.recent_closed_positions(signal.symbol, 20))
+            context = entry_context(
+                snapshot=snapshot,
+                rule_result=result,
+                suggestion=suggestion,
+                portfolio=self._portfolio,
+                history=history,
+            )
+            outcome = await self.advisor.analyze_entry(context, signal_id=signal.id)
+            if not isinstance(sent, list):
+                return
+            if outcome is None:
+                reason = self.advisor.last_skip_reason
+                if reason and "limit" in reason:
+                    await self.notifier.edit(
+                        sent, f"{text}\n\n{ai_skipped_line(reason)}", reply_markup=markup
+                    )
+                return
+            advice, model = outcome
+            self.repo.set_signal_ai_advice(
+                signal.id, json.dumps({"model": model, **advice.model_dump()})
+            )
+            section = ai_entry_section(advice, model, suggestion)
+            await self.notifier.edit(sent, f"{text}\n\n{section}", reply_markup=markup)
+        except Exception:
+            log.exception("AI follow-up for signal #%s failed", signal.id)

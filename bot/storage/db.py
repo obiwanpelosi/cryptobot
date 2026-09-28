@@ -12,7 +12,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from bot.storage.models import AlertSent, Base, BotState, Position, Signal
+from bot.storage.models import AICall, AlertSent, Base, BotState, Position, Signal
 
 DEFAULT_DB_PATH = Path("data") / "bot.db"
 
@@ -85,6 +85,17 @@ class Repo:
             signal.user_action = action
             return True
 
+    def set_signal_ai_advice(self, signal_id: int, advice_json: str) -> None:
+        with self._session() as s, s.begin():
+            signal = s.get(Signal, signal_id)
+            if signal is not None:
+                signal.ai_advice_json = advice_json
+
+    def recent_signals(self, limit: int = 10) -> list[Signal]:
+        with self._session() as s:
+            query = select(Signal).order_by(Signal.ts.desc(), Signal.id.desc()).limit(limit)
+            return list(s.scalars(query))
+
     def mark_alert_sent(self, signal_id: int) -> None:
         with self._session() as s, s.begin():
             signal = s.get(Signal, signal_id)
@@ -129,6 +140,36 @@ class Repo:
                 .limit(limit)
             )
             return list(s.scalars(query))
+
+    def recent_closed_positions(self, symbol: str, limit: int = 20) -> list[Position]:
+        with self._session() as s:
+            query = (
+                select(Position)
+                .where(Position.status == "closed", Position.symbol == symbol)
+                .order_by(Position.exit_time.desc(), Position.id.desc())
+                .limit(limit)
+            )
+            return list(s.scalars(query))
+
+    # --- ai_calls --------------------------------------------------------------------
+
+    def add_ai_call(self, call: AICall) -> AICall:
+        with self._session() as s, s.begin():
+            s.add(call)
+        return call
+
+    def ai_calls_since(self, ts: int, *, exclude_purpose: str | None = "experiment") -> int:
+        """Calls counted against the hourly limit (experiments are run by hand, not limited)."""
+        with self._session() as s:
+            query = select(func.count(AICall.id)).where(AICall.ts >= ts)
+            if exclude_purpose:
+                query = query.where(AICall.purpose != exclude_purpose)
+            return s.scalar(query) or 0
+
+    def ai_spend_since(self, ts: int) -> float:
+        with self._session() as s:
+            total = s.scalar(select(func.sum(AICall.cost_usd)).where(AICall.ts >= ts))
+            return float(total or 0.0)
 
     # --- alerts_sent -----------------------------------------------------------------
 

@@ -71,6 +71,10 @@ class PositionTracker:
         self._sending: dict[int, set[str]] = {}
         self._last_highest_write: dict[int, float] = {}
         self._tasks: set[asyncio.Task] = set()
+        # Phase 6: optional AI follow-up on delivered alerts (None = rule-only).
+        self.advisor: Any = None
+        self.snapshot_for: Callable[[str], Any] = lambda symbol: None
+        self.ai_section: Callable[..., str] | None = None
 
     # --- cache -----------------------------------------------------------------------
 
@@ -142,7 +146,8 @@ class PositionTracker:
         keys = [a.key for a in due]
         try:
             text, markup = self.render_alert(p, price, due)
-            if await self.notifier.send(text, reply_markup=markup) < 1:
+            sent = await self.notifier.send(text, reply_markup=markup)
+            if not sent:
                 log.warning("Position #%s alert %s not delivered; will retry", p.id, keys)
                 return
             self.repo.record_alerts(p.id, keys)
@@ -153,10 +158,44 @@ class PositionTracker:
                 p.targets_hit = json.dumps(targets)
                 self.repo.update_position(p.id, targets_hit=p.targets_hit)
             log.info("Position #%s alert sent: %s at %s", p.id, keys, price)
+            if self.advisor is not None:
+                self._spawn(self._ai_followup(p, price, due, sent, text, markup))
         except Exception:
             log.exception("Position #%s alert failed", p.id)
         finally:
             self._sending.get(p.id, set()).difference_update(keys)
+
+    def _spawn(self, coro) -> None:
+        task = asyncio.create_task(coro)
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+
+    async def _ai_followup(self, p, price, due, sent, text, markup) -> None:
+        """Ask the AI about a delivered alert, then append its advice to the same message."""
+        from bot.ai.prompts import exit_context, trade_history
+
+        try:
+            kinds = sorted({a.kind for a in due})
+            role = "light" if kinds == ["near_stop"] else "strong"
+            pnl_usdt, pnl_pct = position_pnl(p.amount_usdt, p.quantity, price, self.fee)
+            history = trade_history(self.repo.recent_closed_positions(p.symbol, 20))
+            context = exit_context(
+                position=p,
+                price=price,
+                pnl_usdt=pnl_usdt,
+                pnl_pct=pnl_pct,
+                alert_kinds=kinds,
+                snapshot=self.snapshot_for(p.symbol),
+                history=history,
+            )
+            result = await self.advisor.analyze_exit(context, position_id=p.id, role=role)
+            if result is None or self.ai_section is None or not isinstance(sent, list):
+                return
+            advice, model = result
+            section = self.ai_section(advice, model, p.stop_price)
+            await self.notifier.edit(sent, f"{text}\n\n{section}", reply_markup=markup)
+        except Exception:
+            log.exception("AI follow-up for position #%s failed", p.id)
 
     def render_alert(self, p: Position, price: float, due: list[DueAlert]) -> tuple[str, Any]:
         pnl_usdt, pnl_pct = position_pnl(p.amount_usdt, p.quantity, price, self.fee)

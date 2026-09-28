@@ -15,6 +15,7 @@ from telegram.ext import (
     TypeHandler,
 )
 
+from bot.telegram import ai as ai_commands
 from bot.telegram import alerts
 from bot.telegram.deps import Deps, get_deps, reply, resolve_symbol
 from bot.telegram.messages import (
@@ -81,7 +82,41 @@ async def analysis_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if snapshot is None:
         await reply(update, context, "Still warming up (loading candles). Try again shortly.")
         return
-    await reply(update, context, analysis_message(snapshot))
+    text = analysis_message(snapshot)
+    message = await reply(update, context, text)
+    if deps.advisor is not None and message is not None:
+        await _append_ai_view(deps, message, text, snapshot)
+
+
+async def _append_ai_view(deps: Deps, message, text: str, snapshot) -> None:
+    """/analysis 'AI view if enabled' (spec §5.7), using the light model."""
+    from telegram.constants import ParseMode
+
+    from bot.ai.prompts import entry_context, trade_history
+    from bot.telegram.messages import ai_entry_section, ai_skipped_line, with_mode
+
+    try:
+        history = trade_history(deps.repo.recent_closed_positions(snapshot.symbol, 20))
+        ctx = entry_context(
+            snapshot=snapshot,
+            rule_result=None,
+            suggestion=None,
+            portfolio={},
+            history=history,
+            purpose="analysis",
+        )
+        outcome = await deps.advisor.analyze_entry(ctx, purpose="analysis", role="light")
+        if outcome is None:
+            reason = deps.advisor.last_skip_reason or "no usable answer"
+            section = ai_skipped_line(reason)
+        else:
+            advice, model = outcome
+            section = ai_entry_section(advice, model, None)
+        await message.edit_text(
+            with_mode(f"{text}\n\n{section}", deps.mode), parse_mode=ParseMode.HTML
+        )
+    except Exception:
+        log.exception("AI view for /analysis failed")
 
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -102,9 +137,12 @@ _last_polling_warning: dict[str, float] = {}
 def polling_error(exc: Exception) -> None:
     """Error callback for getUpdates polling: one readable line instead of a traceback."""
     if isinstance(exc, Conflict):
-        key, text = "conflict", (
-            "Telegram Conflict: another instance of this bot is already running with the "
-            "same token. Stop the other one (only one poller is allowed)."
+        key, text = (
+            "conflict",
+            (
+                "Telegram Conflict: another instance of this bot is already running with the "
+                "same token. Stop the other one (only one poller is allowed)."
+            ),
         )
     elif isinstance(exc, NetworkError):
         key, text = "network", f"Telegram polling network error: {exc}"
@@ -130,6 +168,6 @@ def build_application(token: str, deps: Deps) -> Application:
     app.add_handler(CommandHandler("balance", balance_cmd))
     app.add_handler(CommandHandler("analysis", analysis_cmd))
     alerts.register(app)
+    ai_commands.register(app)
     app.add_error_handler(error_handler)
     return app
-

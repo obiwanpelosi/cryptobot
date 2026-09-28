@@ -11,6 +11,9 @@ from html import escape
 from binance import BinanceSocketManager
 from telegram.ext import Application
 
+from bot.ai.advisor import AIAdvisor
+from bot.ai.models import ModelCatalog, active_model, active_shadows
+from bot.ai.openrouter import OpenRouterProvider
 from bot.exchange.client import BinanceClient
 from bot.exchange.models import QUOTE_ASSET, Candle, portfolio_value_usdt
 from bot.exchange.streams import PriceStream
@@ -26,7 +29,7 @@ from bot.storage.db import Repo, make_engine
 from bot.telegram.alerts import entry_keyboard
 from bot.telegram.deps import Deps
 from bot.telegram.handlers import build_application, polling_error
-from bot.telegram.messages import base_asset, fmt_price
+from bot.telegram.messages import ai_exit_section, base_asset, fmt_price
 from bot.telegram.notifier import Notifier, NullNotifier
 from bot.telegram.positions import render_position_alert
 
@@ -147,6 +150,46 @@ class CandleSync:
                 self.engine.on_candle_closed(symbol, tf)
 
 
+def build_ai(settings: Settings, repo: Repo, notify) -> tuple[AIAdvisor | None, object | None]:
+    """AIAdvisor when enabled and a key is present; otherwise (None, None) = rule-only."""
+    cfg = settings.strategy.ai
+    key = settings.secrets.openrouter_api_key
+    if not cfg.enabled:
+        log.info("AI layer disabled (ai.enabled: false); alerts are rule-only")
+        return None, None
+    if not key:
+        log.warning("ai.enabled is true but OPENROUTER_API_KEY is missing; alerts are rule-only")
+        return None, None
+    provider = OpenRouterProvider(key.get_secret_value())
+
+    async def on_unavailable(reason: str) -> None:
+        await notify(
+            f"⚠️ AI unavailable ({reason}). Alerts continue rule-only until this is fixed "
+            "and the bot is restarted."
+        )
+
+    advisor = AIAdvisor(
+        provider=provider, repo=repo, strategy=settings.strategy, on_unavailable=on_unavailable
+    )
+    return advisor, provider
+
+
+async def check_ai_models(catalog: ModelCatalog, repo: Repo, settings: Settings) -> None:
+    cfg = settings.strategy.ai
+    models = {active_model(repo, cfg, "strong"), active_model(repo, cfg, "light")}
+    models |= set(active_shadows(repo, cfg))
+    for model in sorted(models):
+        problem = await catalog.validate(model)
+        if problem:
+            log.warning("AI model check: %s", problem)
+    log.info(
+        "AI models: strong=%s light=%s shadow=%s",
+        active_model(repo, cfg, "strong"),
+        active_model(repo, cfg, "light"),
+        active_shadows(repo, cfg) or "none",
+    )
+
+
 async def start_telegram(settings: Settings, deps: Deps) -> Application | None:
     s = settings.secrets
     if not s.telegram_bot_token:
@@ -179,11 +222,11 @@ async def run(settings: Settings) -> None:
     s, cfg = settings.secrets, settings.strategy
     log.info("Starting cryptobot | mode=%s symbols=%s", cfg.mode, cfg.symbols)
     log.info(
-        "binance keys: %s | telegram token: %s (%d allowed chats) | anthropic key: %s",
+        "binance keys: %s | telegram token: %s (%d allowed chats) | openrouter key: %s",
         _present(s.binance_api_key and s.binance_api_secret),
         _present(s.telegram_bot_token),
         len(s.telegram_allowed_chat_ids),
-        _present(s.anthropic_api_key),
+        _present(s.openrouter_api_key),
     )
 
     all_symbols = list(dict.fromkeys(cfg.symbols + cfg.context_symbols))
@@ -191,6 +234,8 @@ async def run(settings: Settings) -> None:
 
     client = await BinanceClient.create(s)
     app: Application | None = None
+    provider = None
+    catalog = ModelCatalog()
     notifier: Notifier | NullNotifier = NullNotifier()
     crash: BaseException | None = None
     try:
@@ -239,6 +284,16 @@ async def run(settings: Settings) -> None:
             return base.atr if base else None
 
         tracker.atr_4h = atr_4h
+        tracker.snapshot_for = snapshots.build
+        tracker.ai_section = ai_exit_section
+
+        async def notify(text: str) -> None:
+            await notifier.send(text)
+
+        advisor, provider = build_ai(settings, repo, notify)
+        if advisor is not None:
+            await check_ai_models(catalog, repo, settings)
+        tracker.advisor = advisor
 
         deps = Deps(
             client=client,
@@ -248,6 +303,8 @@ async def run(settings: Settings) -> None:
             repo=repo,
             filters=filters,
             tracker=tracker,
+            advisor=advisor,
+            catalog=catalog,
         )
         app = await start_telegram(settings, deps)
         if app is not None:
@@ -263,6 +320,7 @@ async def run(settings: Settings) -> None:
             notifier=notifier,
             keyboard=entry_keyboard,
         )
+        sync.engine.advisor = advisor
         watching = ", ".join(base_asset(sym) for sym in all_symbols)
         await notifier.send(f"🟢 cryptobot started. Mode: {cfg.mode}. Watching {watching}.")
 
@@ -298,6 +356,9 @@ async def run(settings: Settings) -> None:
         else:
             await notifier.send("🔴 cryptobot stopping.")
         await stop_telegram(app)
+        if provider is not None:
+            await provider.aclose()
+        await catalog.aclose()
         await client.close()
         log.info("Stopped.")
     if crash is not None:

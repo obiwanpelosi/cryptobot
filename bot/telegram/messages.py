@@ -23,6 +23,7 @@ COMMANDS: list[tuple[str, str]] = [
     ("enter", "Record a position: /enter SOL 50 [price]"),
     ("close", "Close a position: /close 3 [price]"),
     ("history", "Last 20 closed trades"),
+    ("ai", "AI status, models and spend"),
     ("pause", "Pause dip alerts (open positions still monitored)"),
     ("resume", "Resume dip alerts"),
 ]
@@ -350,4 +351,101 @@ def position_alert_text(
         )
     lines.append("")
     lines.append(ADVISORY_FOOTER)
+    return "\n".join(lines)
+
+
+AI_FOOTER = "<i>Not financial advice. The decision is yours.</i>"
+AI_ACTION_LABEL = {
+    "enter": "ENTER",
+    "wait": "WAIT",
+    "skip": "SKIP",
+    "hold": "HOLD",
+    "take_profit": "TAKE PROFIT",
+    "partial_take_profit": "TAKE PARTIAL PROFIT",
+}
+
+
+def _short_model(model: str) -> str:
+    return model.split("/", 1)[-1]
+
+
+def _ai_common(advice, model: str) -> list[str]:
+    action = AI_ACTION_LABEL.get(advice.action, advice.action)
+    lines = [
+        f"🤖 <b>AI ({escape(_short_model(model))}): {action}</b>"
+        f" · confidence {advice.confidence * 100:.0f}% · {escape(advice.time_horizon)}",
+        escape(advice.reasoning),
+    ]
+    if advice.key_risks:
+        lines.append("Risks: " + "; ".join(escape(r) for r in advice.key_risks[:4]))
+    return lines
+
+
+def _ai_stop_line(advice, rule_stop) -> str | None:
+    if not advice.suggested_stop or advice.suggested_stop <= 0:
+        return None
+    if rule_stop is None:
+        return f"AI would use stop {fmt_price(advice.suggested_stop)} (you have no stop set)"
+    rule = float(rule_stop)
+    if abs(advice.suggested_stop - rule) / rule < 0.002:
+        return None
+    ai_stop = fmt_price(advice.suggested_stop)
+    return f"AI would use stop {ai_stop} (rule stop {fmt_price(rule)} kept)"
+
+
+def ai_entry_section(advice, model: str, suggestion) -> str:
+    lines = _ai_common(advice, model)
+    rule_stop = suggestion.stop if suggestion is not None and suggestion.stop > 0 else None
+    stop_line = _ai_stop_line(advice, rule_stop)
+    if stop_line:
+        lines.append(stop_line)
+    if advice.suggested_size_adjustment == "reduce":
+        lines.append("AI suggests a smaller size than the rule suggestion.")
+    elif advice.suggested_size_adjustment == "increase":
+        lines.append("AI suggests larger; capped at your rule size.")
+    lines.append(AI_FOOTER)
+    return "\n".join(lines)
+
+
+def ai_exit_section(advice, model: str, rule_stop) -> str:
+    lines = _ai_common(advice, model)
+    stop_line = _ai_stop_line(advice, rule_stop)
+    if stop_line:
+        lines.append(stop_line)
+    lines.append(AI_FOOTER)
+    return "\n".join(lines)
+
+
+def ai_skipped_line(reason: str) -> str:
+    return f"<i>🤖 AI skipped: {escape(reason)}.</i>"
+
+
+def ai_status_message(
+    *, enabled: bool, has_key: bool, strong: str, light: str, strong_overridden: bool,
+    light_overridden: bool, shadows: list[str], candidates: list[str], calls_hour: int,
+    limit: int, spend_today: float, spend_month: float, unavailable: str | None,
+) -> str:
+    if not enabled:
+        state = "off (set ai.enabled: true in config.yaml)"
+    elif not has_key:
+        state = "off (OPENROUTER_API_KEY missing in .env)"
+    elif unavailable:
+        state = f"⚠️ unavailable: {escape(unavailable)}"
+    else:
+        state = "on"
+    lines = [
+        "<b>AI</b> (OpenRouter)",
+        f"Status: {state}",
+        f"Strong: <code>{escape(strong)}</code>" + (" (override)" if strong_overridden else ""),
+        f"Light: <code>{escape(light)}</code>" + (" (override)" if light_overridden else ""),
+        "Shadow: " + (", ".join(f"<code>{escape(m)}</code>" for m in shadows) or "none"),
+        f"Calls this hour: {calls_hour}/{limit}",
+        f"Spend today: ${spend_today:.4f} · this month: ${spend_month:.4f}",
+        "",
+        "<b>Change models</b>",
+        "/ai model strong &lt;model-id&gt; · /ai model light &lt;model-id&gt;",
+        "/ai model strong reset",
+        "/ai shadow add &lt;model-id&gt; · /ai shadow remove &lt;model-id&gt;",
+        "Candidates: " + ", ".join(f"<code>{escape(m)}</code>" for m in candidates),
+    ]
     return "\n".join(lines)
