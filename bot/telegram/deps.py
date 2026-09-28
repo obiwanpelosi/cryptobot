@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from decimal import Decimal
+from typing import TYPE_CHECKING
 
 from telegram import Update
 from telegram.constants import ParseMode
@@ -18,6 +20,9 @@ from bot.storage.db import Repo
 from bot.telegram.messages import base_asset, with_mode
 from bot.telegram.notifier import Notifier
 
+if TYPE_CHECKING:
+    from bot.positions.tracker import PositionTracker
+
 
 @dataclass
 class Deps:
@@ -28,6 +33,7 @@ class Deps:
     repo: Repo | None = None
     filters: dict[str, SymbolFilters] = field(default_factory=dict)
     notifier: Notifier | None = None
+    tracker: PositionTracker | None = None
     last_error_notice: float = float("-inf")
 
     @property
@@ -51,3 +57,18 @@ async def reply(
         parse_mode=ParseMode.HTML,
         reply_markup=reply_markup,
     )
+
+
+def resolve_symbol(arg: str, symbols: list[str]) -> str | None:
+    """Accept SOL, sol or SOLUSDT for a configured symbol."""
+    wanted = arg.strip().upper()
+    for symbol in symbols:
+        if wanted in (symbol, base_asset(symbol)):
+            return symbol
+    return None
+
+
+def minimum_order(deps: Deps, symbol: str) -> Decimal:
+    configured = Decimal(str(deps.settings.strategy.sizing.min_order_usdt))
+    exchange = deps.filters[symbol].min_notional if symbol in deps.filters else Decimal(0)
+    return max(configured, exchange)

@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+import time
+from collections.abc import Iterable
 from pathlib import Path
 
-from sqlalchemy import create_engine, func, select
+from sqlalchemy import create_engine, func, select, text, update
 from sqlalchemy.engine import Engine
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from bot.storage.models import Base, BotState, Position, Signal
+from bot.storage.models import AlertSent, Base, BotState, Position, Signal
 
 DEFAULT_DB_PATH = Path("data") / "bot.db"
 
@@ -28,7 +31,27 @@ def make_engine(path: str | Path | None = DEFAULT_DB_PATH) -> Engine:
         path.parent.mkdir(parents=True, exist_ok=True)
         engine = create_engine(f"sqlite+pysqlite:///{path}")
     Base.metadata.create_all(engine)
+    _migrate(engine)
     return engine
+
+
+# Columns added after a table first shipped: {table: {column: DDL type/default}}.
+ADDED_COLUMNS = {
+    "positions": {
+        "highest_price": "FLOAT",
+        "trailing": "BOOLEAN NOT NULL DEFAULT 0",
+    },
+}
+
+
+def _migrate(engine: Engine) -> None:
+    """Add missing columns to existing tables (create_all only creates missing tables)."""
+    with engine.begin() as conn:
+        for table, columns in ADDED_COLUMNS.items():
+            existing = {row[1] for row in conn.execute(text(f"PRAGMA table_info({table})"))}
+            for name, ddl in columns.items():
+                if name not in existing:
+                    conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}"))
 
 
 class Repo:
@@ -78,6 +101,60 @@ class Repo:
     def open_positions(self) -> list[Position]:
         with self._session() as s:
             return list(s.scalars(select(Position).where(Position.status == "open")))
+
+    def get_position(self, position_id: int) -> Position | None:
+        with self._session() as s:
+            return s.get(Position, position_id)
+
+    def update_position(self, position_id: int, **fields) -> None:
+        with self._session() as s, s.begin():
+            s.execute(update(Position).where(Position.id == position_id).values(**fields))
+
+    def close_position(self, position_id: int, **fields) -> bool:
+        """Close only if still open. Returns False if it was already closed (or missing)."""
+        with self._session() as s, s.begin():
+            result = s.execute(
+                update(Position)
+                .where(Position.id == position_id, Position.status == "open")
+                .values(status="closed", **fields)
+            )
+            return result.rowcount == 1
+
+    def closed_positions(self, limit: int = 20) -> list[Position]:
+        with self._session() as s:
+            query = (
+                select(Position)
+                .where(Position.status == "closed")
+                .order_by(Position.exit_time.desc(), Position.id.desc())
+                .limit(limit)
+            )
+            return list(s.scalars(query))
+
+    # --- alerts_sent -----------------------------------------------------------------
+
+    def sent_alert_keys(self, position_ids: Iterable[int]) -> dict[int, set[str]]:
+        ids = list(position_ids)
+        out: dict[int, set[str]] = {pid: set() for pid in ids}
+        if not ids:
+            return out
+        with self._session() as s:
+            rows = s.execute(
+                select(AlertSent.position_id, AlertSent.alert_type).where(
+                    AlertSent.position_id.in_(ids)
+                )
+            )
+            for pid, key in rows:
+                out[pid].add(key)
+        return out
+
+    def record_alerts(self, position_id: int, keys: Iterable[str]) -> None:
+        now = int(time.time())
+        for key in keys:
+            try:
+                with self._session() as s, s.begin():
+                    s.add(AlertSent(position_id=position_id, alert_type=key, ts=now))
+            except IntegrityError:
+                pass  # already recorded
 
     # --- key/value state -------------------------------------------------------------
 

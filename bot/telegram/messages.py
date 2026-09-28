@@ -19,6 +19,10 @@ COMMANDS: list[tuple[str, str]] = [
     ("price", "Current SOL, LINK, BTC prices and 24h change"),
     ("balance", "USDT, SOL, LINK balances and total value"),
     ("analysis", "Indicator summary, e.g. /analysis SOL"),
+    ("positions", "Open positions with live P/L"),
+    ("enter", "Record a position: /enter SOL 50 [price]"),
+    ("close", "Close a position: /close 3 [price]"),
+    ("history", "Last 20 closed trades"),
     ("pause", "Pause dip alerts (open positions still monitored)"),
     ("resume", "Resume dip alerts"),
 ]
@@ -26,6 +30,11 @@ COMMANDS: list[tuple[str, str]] = [
 
 def fmt_price(price: Decimal | float) -> str:
     return f"{price:,.2f}" if price >= 1 else f"{price:.4f}"
+
+
+def plain(value: Decimal) -> str:
+    """Decimal as plain digits (never scientific notation), trailing zeros removed."""
+    return f"{value.normalize():f}"
 
 
 def fmt_pct(value: float | None, digits: int = 1) -> str:
@@ -225,4 +234,120 @@ def entry_alert(
         lines.append("<i>All P/L after fees.</i>")
     lines.append("")
     lines.append("<i>Advisory only. You place orders on Binance yourself.</i>")
+    return "\n".join(lines)
+
+
+ADVISORY_FOOTER = "<i>Advisory only. You place orders on Binance yourself.</i>"
+
+
+def fmt_duration(seconds: float) -> str:
+    seconds = max(0, int(seconds))
+    days, rem = divmod(seconds, 86400)
+    hours, rem = divmod(rem, 3600)
+    if days:
+        return f"{days}d {hours}h"
+    if hours:
+        return f"{hours}h {rem // 60}m"
+    return f"{rem // 60}m"
+
+
+def fmt_usdt(value: float) -> str:
+    return f"{value:+,.2f} USDT"
+
+
+def positions_message(rows: list[dict], now: float | None = None) -> str:
+    """rows: dicts with position, price (or None), pnl_usdt, pnl_pct, next_target."""
+    if not rows:
+        return "No open positions. Record one from an alert or with /enter SOL 50."
+    now = time.time() if now is None else now
+    lines = ["<b>Open positions</b>"]
+    total_pnl = total_amount = 0.0
+    for r in rows:
+        p = r["position"]
+        name = escape(base_asset(p.symbol))
+        paper = " · paper" if p.is_paper else ""
+        lines.append("")
+        lines.append(
+            f"<b>#{p.id} {name}</b> {p.amount_usdt:,.2f} USDT"
+            f" @ {fmt_price(p.entry_price)} · {fmt_duration(now - p.entry_time)}{paper}"
+        )
+        if r["price"] is None:
+            lines.append("Now: no live price yet")
+        else:
+            lines.append(
+                f"Now {fmt_price(r['price'])} · P/L <b>{fmt_pct(r['pnl_pct'])}</b>"
+                f" ({fmt_usdt(r['pnl_usdt'])})"
+            )
+            total_pnl += r["pnl_usdt"]
+            total_amount += p.amount_usdt
+        stop = "none"
+        if p.stop_price:
+            stop = fmt_price(p.stop_price) + (" (trailing)" if p.trailing else "")
+        nxt = f"+{r['next_target']:g}%" if r["next_target"] is not None else "all hit"
+        lines.append(f"Stop {stop} · next target {nxt}")
+    if total_amount:
+        lines.append("")
+        lines.append(
+            f"<b>Total open P/L: {fmt_usdt(total_pnl)}"
+            f" ({fmt_pct(total_pnl / total_amount * 100)})</b>"
+        )
+    lines.append("<i>P/L is after fees (buy and sell).</i>")
+    return "\n".join(lines)
+
+
+def history_message(positions: list) -> str:
+    if not positions:
+        return "No closed trades yet."
+    lines = [f"<b>Last {len(positions)} closed trades</b>"]
+    total = 0.0
+    wins = 0
+    for p in positions:
+        pnl = p.realised_pnl_usdt or 0.0
+        total += pnl
+        wins += pnl > 0
+        mark = "🟢" if pnl > 0 else "🔴"
+        held = fmt_duration((p.exit_time or p.entry_time) - p.entry_time)
+        paper = " · paper" if p.is_paper else ""
+        lines.append(
+            f"{mark} #{p.id} {escape(base_asset(p.symbol))} {fmt_price(p.entry_price)}"
+            f" → {fmt_price(p.exit_price or 0)} · {fmt_pct(p.realised_pnl_pct)}"
+            f" ({fmt_usdt(pnl)}) · {held}{paper}"
+        )
+    lines.append("")
+    lines.append(f"<b>Total: {fmt_usdt(total)}</b> · wins {wins}/{len(positions)}")
+    return "\n".join(lines)
+
+
+def position_alert_text(
+    *, position, price, due, pnl_usdt, pnl_pct, next_target, suggested_trailing_stop
+) -> str:
+    p = position
+    name = escape(base_asset(p.symbol))
+    kinds = {a.kind for a in due}
+    lines = []
+    if "stop_hit" in kinds:
+        lines.append(f"🛑 <b>{name} #{p.id} hit its stop</b> {fmt_price(p.stop_price)}")
+    elif "near_stop" in kinds:
+        lines.append(
+            f"⚠️ <b>{name} #{p.id} is within 2% of its stop</b> {fmt_price(p.stop_price)}"
+        )
+    targets = [a.target_pct for a in due if a.kind == "target"]
+    if targets:
+        label = ", ".join(f"+{t:g}%" for t in targets)
+        plural = "s" if len(targets) > 1 else ""
+        lines.append(f"🎯 <b>{name} #{p.id} target{plural} {label} reached</b>")
+    lines.append(
+        f"Entry {fmt_price(p.entry_price)} → now {fmt_price(price)}"
+        f" · P/L <b>{fmt_pct(pnl_pct)}</b> ({fmt_usdt(pnl_usdt)}) after fees"
+    )
+    stop = fmt_price(p.stop_price) if p.stop_price else "none"
+    nxt = f"+{next_target:g}%" if next_target is not None else "all targets hit"
+    lines.append(f"Stop {stop}{' (trailing)' if p.trailing else ''} · next {nxt}")
+    if "trail_suggest" in kinds:
+        lines.append(
+            f"💡 Consider a trailing stop at {fmt_price(suggested_trailing_stop)}: it follows"
+            " new highs and locks in at least breakeven."
+        )
+    lines.append("")
+    lines.append(ADVISORY_FOOTER)
     return "\n".join(lines)

@@ -180,6 +180,10 @@ def test_application_builds_with_all_handlers():
     app = handlers.build_application("123456:TEST-TOKEN", make_deps())
     registered = [h for group in app.handlers.values() for h in group]
     commands = {c for h in registered if isinstance(h, CommandHandler) for c in h.commands}
-    assert {"start", "price", "balance", "analysis", "pause", "resume"} <= commands
+    assert {
+        "start", "price", "balance", "analysis", "pause", "resume",
+        "positions", "enter", "close", "history",
+    } <= commands
     assert any(isinstance(h, ConversationHandler) for h in registered)
-    assert sum(isinstance(h, CallbackQueryHandler) for h in registered) == 2  # cfm, cxl
+    # cfm, cxl (signal confirm) + ent, cls, no, pos (positions)
+    assert sum(isinstance(h, CallbackQueryHandler) for h in registered) == 6

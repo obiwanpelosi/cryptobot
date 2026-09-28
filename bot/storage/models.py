@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from sqlalchemy import Boolean, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, Float, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -47,6 +47,21 @@ class Position(Base):
         ForeignKey("signals.id"), nullable=True
     )
     is_paper: Mapped[bool] = mapped_column(Boolean, default=True)
+    highest_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    trailing: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+class AlertSent(Base):
+    """One row per alert actually delivered; the unique key makes every alert fire once."""
+
+    __tablename__ = "alerts_sent"
+    __table_args__ = (UniqueConstraint("position_id", "alert_type"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    position_id: Mapped[int | None] = mapped_column(ForeignKey("positions.id"), nullable=True)
+    signal_id: Mapped[int | None] = mapped_column(ForeignKey("signals.id"), nullable=True)
+    alert_type: Mapped[str] = mapped_column(String(40))
+    ts: Mapped[int] = mapped_column(Integer)
 
 
 class BotState(Base):

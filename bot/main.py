@@ -18,6 +18,7 @@ from bot.logging_setup import setup_logging
 from bot.market.candles import CandleStore
 from bot.market.context import MarketContext
 from bot.market.snapshot import SnapshotBuilder
+from bot.positions.tracker import PositionTracker
 from bot.settings import PROJECT_ROOT, Settings, load_settings
 from bot.signals.engine import SignalEngine
 from bot.signals.sizing import SymbolFilters
@@ -27,6 +28,7 @@ from bot.telegram.deps import Deps
 from bot.telegram.handlers import build_application, polling_error
 from bot.telegram.messages import base_asset, fmt_price
 from bot.telegram.notifier import Notifier, NullNotifier
+from bot.telegram.positions import render_position_alert
 
 log = logging.getLogger("bot")
 
@@ -204,11 +206,21 @@ async def run(settings: Settings) -> None:
         market = MarketContext(client, cfg.symbols, cfg.macro_events)
         await market.refresh()
 
+        tracker = PositionTracker(
+            repo=repo,
+            strategy=cfg,
+            notifier=NullNotifier(),  # replaced once Telegram is up, before the stream runs
+            tick_size=lambda sym: float(filters[sym].tick_size) if sym in filters else 0.0,
+            render=render_position_alert,
+        )
+        tracker.load()
+
         sync = CandleSync(store, client)
         bsm = BinanceSocketManager(client.raw)
         stream = PriceStream(
             all_symbols,
             bsm.multiplex_socket,
+            on_tick=tracker.on_tick,
             kline_intervals=cfg.timeframes,
             on_candle=sync.on_candle,
             on_connect=sync.on_connect,
@@ -222,6 +234,12 @@ async def run(settings: Settings) -> None:
             btc_symbol=cfg.context_symbols[0] if cfg.context_symbols else None,
         )
 
+        def atr_4h(symbol: str) -> float | None:
+            base = snapshots.base_indicators(symbol, "4h")
+            return base.atr if base else None
+
+        tracker.atr_4h = atr_4h
+
         deps = Deps(
             client=client,
             stream=stream,
@@ -229,11 +247,13 @@ async def run(settings: Settings) -> None:
             snapshots=snapshots,
             repo=repo,
             filters=filters,
+            tracker=tracker,
         )
         app = await start_telegram(settings, deps)
         if app is not None:
             notifier = Notifier(app.bot, s.telegram_allowed_chat_ids, cfg.mode)
             deps.notifier = notifier
+        tracker.notifier = notifier
         sync.engine = SignalEngine(
             strategy=cfg,
             snapshots=snapshots,

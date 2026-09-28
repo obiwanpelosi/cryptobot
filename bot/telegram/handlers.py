@@ -16,7 +16,7 @@ from telegram.ext import (
 )
 
 from bot.telegram import alerts
-from bot.telegram.deps import Deps, get_deps, reply
+from bot.telegram.deps import Deps, get_deps, reply, resolve_symbol
 from bot.telegram.messages import (
     COMMANDS,
     analysis_message,
@@ -67,14 +67,6 @@ async def balance_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
     prices = {s: t.price for s, t in deps.stream.ticks.items()}
     await reply(update, context, balance_message(balances, prices))
-
-
-def resolve_symbol(arg: str, symbols: list[str]) -> str | None:
-    wanted = arg.strip().upper()
-    for symbol in symbols:
-        if wanted in (symbol, base_asset(symbol)):
-            return symbol
-    return None
 
 
 async def analysis_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

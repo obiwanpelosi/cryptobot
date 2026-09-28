@@ -28,11 +28,13 @@ from telegram.ext import (
 from telegram.warnings import PTBUserWarning
 
 from bot.exchange.models import QUOTE_ASSET
+from bot.positions import service
 from bot.signals.engine import alerts_paused, set_alerts_paused
-from bot.signals.sizing import Suggestion, fee_fraction, round_to
-from bot.storage.models import Position, Signal
-from bot.telegram.deps import Deps, get_deps, reply
-from bot.telegram.messages import base_asset, fmt_price, with_mode
+from bot.signals.sizing import Suggestion
+from bot.storage.models import Signal
+from bot.telegram import positions
+from bot.telegram.deps import Deps, get_deps, minimum_order, reply
+from bot.telegram.messages import base_asset, fmt_price, plain, with_mode
 
 log = logging.getLogger(__name__)
 
@@ -56,11 +58,6 @@ def entry_keyboard(signal_id: int, has_suggestion: bool = True) -> InlineKeyboar
         ]
     )
     return InlineKeyboardMarkup(rows)
-
-
-def plain(value: Decimal) -> str:
-    """Decimal as plain digits (never scientific notation), trailing zeros removed."""
-    return f"{value.normalize():f}"
 
 
 def confirm_keyboard(signal_id: int, usdt: Decimal, price: Decimal) -> InlineKeyboardMarkup:
@@ -92,12 +89,6 @@ def _check_signal(deps: Deps, signal_id: int, now: float) -> tuple[Signal | None
 def _live_price(deps: Deps, signal: Signal) -> Decimal:
     tick = deps.stream.ticks.get(signal.symbol)
     return tick.price if tick is not None else Decimal(str(signal.price))
-
-
-def _minimum_order(deps: Deps, symbol: str) -> Decimal:
-    configured = Decimal(str(deps.settings.strategy.sizing.min_order_usdt))
-    exchange = deps.filters[symbol].min_notional if symbol in deps.filters else Decimal(0)
-    return max(configured, exchange)
 
 
 def _confirm_text(signal: Signal, usdt: Decimal, price: Decimal) -> str:
@@ -195,7 +186,7 @@ async def on_custom_amount(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         return AWAITING_AMOUNT
     usdt = usdt.quantize(Decimal("0.01"), rounding=ROUND_FLOOR)
 
-    minimum = _minimum_order(deps, signal.symbol)
+    minimum = minimum_order(deps, signal.symbol)
     if usdt < minimum:
         await reply(update, context, f"Minimum order is {minimum:.2f} USDT. Try again or /cancel.")
         return AWAITING_AMOUNT
@@ -234,27 +225,6 @@ async def on_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 # --- confirmation ----------------------------------------------------------------------
 
 
-def build_position(deps: Deps, signal: Signal, usdt: Decimal, price: Decimal) -> Position:
-    fee = fee_fraction(deps.settings.strategy.fees)
-    qty = usdt / price * (1 - fee)  # Binance takes the buy fee from the coin received
-    if signal.symbol in deps.filters:
-        qty = round_to(qty, deps.filters[signal.symbol].step_size, ROUND_FLOOR)
-    stop = None
-    if signal.suggestion_json:
-        stop = float(json.loads(signal.suggestion_json).get("stop") or 0) or None
-    return Position(
-        symbol=signal.symbol,
-        entry_time=int(time.time()),
-        entry_price=float(price),
-        amount_usdt=float(usdt),
-        quantity=float(qty),
-        stop_price=stop,
-        fees_usdt=float(usdt * fee),
-        linked_signal_id=signal.id,
-        is_paper=deps.mode == "paper",
-    )
-
-
 async def on_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     deps = get_deps(context)
     _, raw_id, raw_usdt, raw_price = update.callback_query.data.split(":")
@@ -266,10 +236,16 @@ async def on_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         await _answer(update, "Already handled.")
         return
     usdt, price = Decimal(raw_usdt), Decimal(raw_price)
-    position = deps.repo.add_position(build_position(deps, signal, usdt, price))
-    log.info(
-        "Position #%s recorded from signal #%s: %s %s USDT @ %s (paper=%s)",
-        position.id, signal.id, signal.symbol, usdt, price, position.is_paper,
+    suggested_stop = None
+    if signal.suggestion_json:
+        suggested_stop = json.loads(signal.suggestion_json).get("stop")
+    position = service.open_position(
+        deps,
+        signal.symbol,
+        usdt,
+        price,
+        stop=Decimal(str(suggested_stop)) if suggested_stop else None,
+        signal_id=signal.id,
     )
     paper = " (paper)" if position.is_paper else ""
     stop = f", stop {fmt_price(position.stop_price)}" if position.stop_price else ""
@@ -335,3 +311,4 @@ def register(app: Application) -> None:
     app.add_handler(CallbackQueryHandler(on_cancel_confirm, pattern=r"^cxl:\d+$"))
     app.add_handler(CommandHandler("pause", pause_cmd))
     app.add_handler(CommandHandler("resume", resume_cmd))
+    positions.register(app)
