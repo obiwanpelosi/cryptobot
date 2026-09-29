@@ -14,6 +14,7 @@ from telegram.ext import Application
 from bot.ai.advisor import AIAdvisor
 from bot.ai.models import ModelCatalog, active_model, active_shadows
 from bot.ai.openrouter import OpenRouterProvider
+from bot.evaluation.outcomes import OutcomeEvaluator
 from bot.exchange.client import BinanceClient
 from bot.exchange.models import QUOTE_ASSET, Candle, portfolio_value_usdt
 from bot.exchange.streams import PriceStream
@@ -333,6 +334,9 @@ async def run(settings: Settings) -> None:
             asyncio.create_task(stream.run(), name="price-stream"),
             asyncio.create_task(reporter(client, stream, assets, notifier), name="reporter"),
             asyncio.create_task(market.run(), name="market-context"),
+            asyncio.create_task(
+                OutcomeEvaluator(repo=repo, klines=client, strategy=cfg).run(), name="outcomes"
+            ),
         ]
         stopper = asyncio.create_task(stop.wait())
         done, _ = await asyncio.wait([*tasks, stopper], return_when=asyncio.FIRST_COMPLETED)

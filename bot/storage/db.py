@@ -12,7 +12,15 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from bot.storage.models import AICall, AlertSent, Base, BotState, Position, Signal
+from bot.storage.models import (
+    AICall,
+    AlertSent,
+    Base,
+    BotState,
+    Position,
+    Signal,
+    SignalOutcome,
+)
 
 DEFAULT_DB_PATH = Path("data") / "bot.db"
 
@@ -170,6 +178,63 @@ class Repo:
         with self._session() as s:
             total = s.scalar(select(func.sum(AICall.cost_usd)).where(AICall.ts >= ts))
             return float(total or 0.0)
+
+    # --- evaluation ------------------------------------------------------------------
+
+    def all_signals(self) -> list[Signal]:
+        with self._session() as s:
+            return list(s.scalars(select(Signal).order_by(Signal.ts, Signal.id)))
+
+    def outcome_keys(self) -> set[tuple[int, str]]:
+        with self._session() as s:
+            return set(s.execute(select(SignalOutcome.signal_id, SignalOutcome.horizon)).all())
+
+    def signals_missing_outcome(
+        self, horizons: dict[str, int], now: int
+    ) -> list[tuple[Signal, str]]:
+        """(signal, horizon) pairs whose window has closed but that have no outcome yet."""
+        done = self.outcome_keys()
+        due = []
+        for signal in self.all_signals():
+            for horizon, seconds in horizons.items():
+                if signal.ts + seconds <= now and (signal.id, horizon) not in done:
+                    due.append((signal, horizon))
+        return due
+
+    def add_outcome(self, outcome: SignalOutcome) -> bool:
+        try:
+            with self._session() as s, s.begin():
+                s.add(outcome)
+            return True
+        except IntegrityError:
+            return False  # already recorded
+
+    def outcomes_by_signal(self) -> dict[int, dict[str, SignalOutcome]]:
+        out: dict[int, dict[str, SignalOutcome]] = {}
+        with self._session() as s:
+            for row in s.scalars(select(SignalOutcome)):
+                out.setdefault(row.signal_id, {})[row.horizon] = row
+        return out
+
+    def ai_answer_rows(self) -> list[AICall]:
+        """Valid AI answers tied to a signal (primary, shadow and experiment)."""
+        with self._session() as s:
+            query = (
+                select(AICall)
+                .where(AICall.signal_id.is_not(None), AICall.valid_json.is_(True))
+                .order_by(AICall.ts, AICall.id)
+            )
+            return list(s.scalars(query))
+
+    def ai_cost_by_model(self) -> dict[str, tuple[int, float]]:
+        """{model: (calls, total cost)} across all AI calls."""
+        with self._session() as s:
+            rows = s.execute(
+                select(AICall.model, func.count(AICall.id), func.sum(AICall.cost_usd)).group_by(
+                    AICall.model
+                )
+            )
+            return {model: (n, float(total or 0.0)) for model, n, total in rows}
 
     # --- alerts_sent -----------------------------------------------------------------
 

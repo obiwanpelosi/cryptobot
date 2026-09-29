@@ -88,6 +88,26 @@ class AICall(Base):
     position_id: Mapped[int | None] = mapped_column(ForeignKey("positions.id"), nullable=True)
 
 
+class SignalOutcome(Base):
+    """What the price did after a signal (requirements.md §5.10, §6)."""
+
+    __tablename__ = "signal_outcomes"
+    __table_args__ = (UniqueConstraint("signal_id", "horizon"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    signal_id: Mapped[int] = mapped_column(ForeignKey("signals.id"), index=True)
+    horizon: Mapped[str] = mapped_column(String(5))  # 24h | 72h | 7d
+    return_pct: Mapped[float] = mapped_column(Float)  # net of both fees
+    max_favourable_pct: Mapped[float] = mapped_column(Float)
+    max_adverse_pct: Mapped[float] = mapped_column(Float)
+    first_hit: Mapped[str] = mapped_column(String(10))  # target | stop | none
+    stop_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    target_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    target_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    stop_loss_pct: Mapped[float | None] = mapped_column(Float, nullable=True)  # net, at stop
+    evaluated_at: Mapped[int] = mapped_column(Integer)
+
+
 class BotState(Base):
     __tablename__ = "bot_state"
 

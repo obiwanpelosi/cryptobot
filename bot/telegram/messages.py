@@ -23,6 +23,7 @@ COMMANDS: list[tuple[str, str]] = [
     ("enter", "Record a position: /enter SOL 50 [price]"),
     ("close", "Close a position: /close 3 [price]"),
     ("history", "Last 20 closed trades"),
+    ("stats", "Results: your trades, signal outcomes, rules vs AI"),
     ("ai", "AI status, models and spend"),
     ("pause", "Pause dip alerts (open positions still monitored)"),
     ("resume", "Resume dip alerts"),
@@ -448,4 +449,69 @@ def ai_status_message(
         "/ai shadow add &lt;model-id&gt; · /ai shadow remove &lt;model-id&gt;",
         "Candidates: " + ", ".join(f"<code>{escape(m)}</code>" for m in candidates),
     ]
+    return "\n".join(lines)
+
+
+def _num(value, fmt: str) -> str:
+    return "-" if value is None else format(value, fmt)
+
+
+def strategy_table(strategies) -> str:
+    rows = [f"{'strategy':16}{'n':>4}{'trd':>4}{'win%':>5}{'avg%':>6}{'tot%':>7}{'acc%':>5}"]
+    for st in strategies:
+        name = _short_model(st.name)[:15] + ("*" if not st.enough_data else "")
+        rows.append(
+            f"{name:16}{st.judged:>4}{st.trades:>4}{_num(st.win_rate, '.0f'):>5}"
+            f"{_num(st.avg_pct, '+.1f'):>6}{st.total_pct:>+7.1f}{_num(st.accuracy, '.0f'):>5}"
+        )
+    return "\n".join(rows)
+
+
+def stats_message(report) -> str:
+    lines = ["<b>📊 Stats</b>" + (" (all signals)" if report.include_all else "")]
+
+    lines += ["", "<b>Your closed trades</b>"]
+    if not report.trades:
+        lines.append("None yet.")
+    for t in report.trades:
+        lines.append(
+            f"{t.label}: {t.count} trades · win rate {_num(t.win_rate, '.0f')}%"
+            f" · avg win {fmt_pct(t.avg_win_pct)} · avg loss {fmt_pct(t.avg_loss_pct)}"
+            f" · total {fmt_usdt(t.total_pnl_usdt)}"
+        )
+
+    lines += ["", f"<b>Signals</b>: {report.signals_total}"]
+    if report.excluded:
+        lines.append(
+            f"<i>{report.excluded} made under different rule thresholds excluded"
+            " · /stats all to include</i>"
+        )
+    for h in report.horizons:
+        if not h.evaluated:
+            lines.append(f"+{h.horizon}: {h.pending} pending")
+            continue
+        lines.append(
+            f"+{h.horizon}: {h.evaluated} done ({h.pending} pending) · target first"
+            f" {h.target_first}, stop first {h.stop_first}, neither {h.neither}"
+            f" · avg {fmt_pct(h.avg_return_pct)} (best {fmt_pct(h.avg_best_pct)},"
+            f" worst {fmt_pct(h.avg_worst_pct)})"
+        )
+
+    lines += ["", f"<b>Rules vs AI vs you</b> (at +{report.horizon})" if report.horizon else ""]
+    if not report.strategies:
+        lines.append("Not enough data yet: outcomes appear 24h after each signal.")
+    else:
+        lines.append("<pre>" + escape(strategy_table(report.strategies)) + "</pre>")
+        lines.append(
+            "<i>Rules baseline = enter every signal · You = what you entered · n = signals"
+            " judged · trd = trades taken · avg/tot = net % per trade, equal size · acc = right"
+            " to enter or skip · * fewer than 10 answers, too early to judge</i>"
+        )
+        costs = [
+            f"{escape(_short_model(st.name))} ${st.cost_per_call:.4f}"
+            for st in report.strategies
+            if st.cost_per_call is not None
+        ]
+        if costs:
+            lines.append("AI cost per call: " + " · ".join(costs))
     return "\n".join(lines)

@@ -174,6 +174,21 @@ class BinanceClient:
         now_ms = int(time.time() * 1000) if now_ms is None else now_ms
         return [candle for candle in map(_parse_kline, rows) if candle.close_time_ms < now_ms]
 
+    async def get_klines_range(
+        self, symbol: str, interval: str, start_ms: int, end_ms: int, *, limit: int = 1000
+    ) -> list[Candle]:
+        """Closed candles opening within [start_ms, end_ms] (up to `limit`)."""
+        rows = await self._call(
+            self._client.get_klines,
+            symbol=symbol,
+            interval=interval,
+            startTime=start_ms,
+            endTime=end_ms,
+            limit=limit,
+        )
+        now_ms = int(time.time() * 1000)
+        return [c for c in map(_parse_kline, rows) if c.close_time_ms < now_ms]
+
     async def get_funding(self, symbol: str) -> dict[str, Any]:
         """Latest funding rate (as %) and next funding time, from USD-M futures (public)."""
         data = await self._call(self._client.futures_mark_price, symbol=symbol)

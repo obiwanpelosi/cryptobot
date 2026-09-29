@@ -17,6 +17,7 @@ from telegram.ext import (
 
 from bot.telegram import ai as ai_commands
 from bot.telegram import alerts
+from bot.telegram import stats as stats_commands
 from bot.telegram.deps import Deps, get_deps, reply, resolve_symbol
 from bot.telegram.messages import (
     COMMANDS,
@@ -169,5 +170,6 @@ def build_application(token: str, deps: Deps) -> Application:
     app.add_handler(CommandHandler("analysis", analysis_cmd))
     alerts.register(app)
     ai_commands.register(app)
+    stats_commands.register(app)
     app.add_error_handler(error_handler)
     return app
