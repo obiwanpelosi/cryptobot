@@ -256,3 +256,67 @@ async def test_light_role_uses_light_model():
     advisor, _ = make_advisor(provider)
     _, model = await advisor.analyze_entry("{}", purpose="analysis", role="light")
     assert model == advisor.cfg.light_model
+
+
+# --- readable numbers and times -------------------------------------------------------------
+
+
+def test_simplify_numbers_and_times():
+    from bot.ai.prompts import simplify, simplify_number, utc_text
+
+    now = 1_790_586_003
+    assert simplify_number("oi_change_24h_pct", -1.3667440731548566) == -1.37
+    assert simplify_number("open_interest_usdt", 132103586.60100724) == 132103587
+    assert simplify_number("price", 13.692) == 13.692
+    assert simplify_number("price", 82955.59) == 82956  # >= 100k -> whole number
+    assert simplify_number("price", 121.994321) == 121.99
+    assert simplify_number("macd_hist", -0.006908123) == -0.0069081
+    assert simplify_number("x", 0.0) == 0
+    data = simplify(
+        {"as_of": now, "next_funding_time_ms": (now + 6 * 3600) * 1000, "n": [1.123456789]}, now
+    )
+    assert data["as_of"] == f"{utc_text(now)} (in 0 min)"
+    assert data["next_funding_time"].endswith("(in 6.0h)") and "next_funding_time_ms" not in data
+    assert data["n"] == [1.1235]
+
+
+def test_context_has_readable_now_and_no_long_numbers():
+    import re
+
+    ctx = entry_context(
+        snapshot=make_snap(),
+        rule_result=None,
+        suggestion=None,
+        portfolio={},
+        history=[],
+        now=1_790_586_003,
+    )
+    assert json.loads(ctx)["now_utc"] == "2026-09-28 09:00 UTC"
+    assert not re.search(r"\d\.\d{7,}", ctx)  # nothing with 7+ decimals
+
+
+def test_replayed_test_signal_gets_note():
+    from bot.ai.compare import TEST_THRESHOLDS_NOTE, signal_case
+    from bot.storage.models import Signal
+    from tests.test_evaluation import REAL_RULES, TEST_RULES
+
+    repo = Repo(make_engine(None))
+    rules = load_strategy().dip_rules
+
+    def stored(rule_rows):
+        return repo.add_signal(
+            Signal(
+                symbol="SOLUSDT",
+                ts=1_790_586_003,
+                price=100.0,
+                snapshot_json=make_snap().model_dump_json(),
+                rule_values_json=json.dumps(rule_rows),
+                high_risk=False,
+            )
+        )
+
+    test_ctx = json.loads(signal_case(stored(TEST_RULES), repo, rules).context)
+    real_ctx = json.loads(signal_case(stored(REAL_RULES), repo, rules).context)
+    assert test_ctx["note"] == TEST_THRESHOLDS_NOTE
+    assert "note" not in real_ctx
+    assert real_ctx["now_utc"] == "2026-09-28 09:00 UTC"  # replay sees the signal's own time

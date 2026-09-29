@@ -27,6 +27,7 @@ from bot.ai.models import ModelCatalog
 from bot.ai.openrouter import OpenRouterProvider
 from bot.ai.prompts import entry_context, exit_context, trade_history
 from bot.ai.schema import EntryAdvice, ExitAdvice
+from bot.evaluation.scoring import current_rule_signature, same_rules, signal_rule_signature
 from bot.market.snapshot import MarketSnapshot
 from bot.positions.logic import position_pnl
 from bot.settings import PROJECT_ROOT, Settings, load_settings
@@ -61,7 +62,13 @@ def _resolve(symbol: str, symbols: list[str]) -> str:
     raise SystemExit(f"Unknown symbol {symbol}. One of: {', '.join(symbols)}")
 
 
-def signal_case(signal: Signal, repo: Repo) -> Case:
+TEST_THRESHOLDS_NOTE = (
+    "This signal was generated under loosened test thresholds, so the rule_checks thresholds "
+    "are not the user's real rules. Judge it on the market data, not on whether rules passed."
+)
+
+
+def signal_case(signal: Signal, repo: Repo, settings_rules=None) -> Case:
     """Rebuild the entry context for a stored signal, as the rules saw it at the time."""
     snapshot = MarketSnapshot.model_validate_json(signal.snapshot_json)
     rows = json.loads(signal.rule_values_json or "[]")
@@ -81,12 +88,19 @@ def signal_case(signal: Signal, repo: Repo) -> Case:
         p for p in repo.recent_closed_positions(signal.symbol, 50) if (p.exit_time or 0) < signal.ts
     ]
     history = trade_history(earlier[:20])
+    note = None
+    if settings_rules is not None and not same_rules(
+        signal_rule_signature(signal), current_rule_signature(settings_rules)
+    ):
+        note = TEST_THRESHOLDS_NOTE
     context = entry_context(
         snapshot=snapshot,
         rule_result=rule_result,
         suggestion=suggestion,
         portfolio={"note": "portfolio at signal time not stored"},
         history=history,
+        note=note,
+        now=signal.ts,
     )
     when = time.strftime("%Y-%m-%d %H:%M", time.localtime(signal.ts))
     return Case(f"signal #{signal.id} {signal.symbol} {when}", "entry", context, signal.id)
@@ -352,7 +366,7 @@ async def main(argv: list[str] | None = None) -> int:
         if not signals:
             print("No stored signals found.")
             return 1
-        cases = [signal_case(s, repo) for s in signals]
+        cases = [signal_case(s, repo, cfg.dip_rules) for s in signals]
 
     provider = OpenRouterProvider(key.get_secret_value())
     catalog = ModelCatalog()

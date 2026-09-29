@@ -26,7 +26,7 @@ def test_repo_config_loads():
     assert cfg.symbols == ["SOLUSDT", "LINKUSDT"]
     assert cfg.mode == "paper"
     assert cfg.exit_alerts.profit_targets_pct == [10, 15, 20]
-    assert cfg.ai.enabled is False
+    assert isinstance(cfg.ai.enabled, bool)  # your own on/off choice, not a fixed default
 
 
 def test_bad_mode_rejected(tmp_path):
