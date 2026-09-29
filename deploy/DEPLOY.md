@@ -66,17 +66,22 @@ mkdir -p /opt/cryptobot && chown bot:bot /opt/cryptobot
 exit
 ```
 
+
+
 ## 4. Get the code
 
 ```bash
 ssh bot@SERVER_IP                                                             # Mac
 git clone https://github.com/obiwanpelosi/cryptobot.git /opt/cryptobot        # Server
-cd /opt/cryptobot && id -u                                                    # Server: note this number
+cd /opt/cryptobot && mkdir -p data logs && id -u                              # Server: note this number
 ```
 
-If `id -u` printed something other than `1000`, add `export BOT_UID=<that number>` to
-`~/.bashrc` on the server and log in again. The container's user has to match, so it can write to
-`data/` and `logs/`.
+Create `data/` and `logs/` yourself, as above. If they don't exist when the bot first starts, Docker
+creates them owned by root, and the bot crashes with `PermissionError: … '/app/logs/bot.log'`.
+
+If `id -u` printed something other than `1000`, run
+`echo 'export BOT_UID=$(id -u)' >> ~/.bashrc && source ~/.bashrc`. The container's user has to
+match the owner of `data/` and `logs/`, so it can write to them.
 
 ## 5. Copy your secrets (and, optionally, your history)
 
@@ -126,6 +131,8 @@ docker compose restart             # Server
 > After this, the key **only works from the server**. Running the bot on your Mac with the same
 > key will fail, which is fine: the server is the one copy now.
 
+
+
 ## 8. Nightly backups
 
 ```bash
@@ -141,6 +148,8 @@ whenever you like:
 deploy/pull-backups.sh bot@SERVER_IP             # Mac: copies into ./backups/
 ```
 
+
+
 ## 9. Check that it survives problems
 
 ```bash
@@ -151,29 +160,36 @@ Docker also restarts it if it ever crashes (`restart: unless-stopped`).
 
 ---
 
+
+
 ## Everyday use
 
-| Task | Command (on the server, in `/opt/cryptobot`) |
-|---|---|
-| Is it running and healthy? | `docker compose ps` |
-| Live logs | `docker compose logs -f` (or `tail -f logs/bot.log`) |
-| Change a setting | `nano config.yaml`, then `docker compose restart` |
-| Ship a new version (after `git push` from your Mac) | `deploy/update.sh` |
-| Stop the bot | `docker compose stop` (start again: `docker compose start`) |
-| Run an AI model comparison | `docker compose exec bot python -m bot.ai.compare --live SOL` |
-| Full stats report | `docker compose exec bot python -m bot.evaluation.report` |
-| Back up now | `docker compose exec -T bot python -m bot.storage.backup` |
+
+| Task                                                | Command (on the server, in `/opt/cryptobot`)                  |
+| --------------------------------------------------- | ------------------------------------------------------------- |
+| Is it running and healthy?                          | `docker compose ps`                                           |
+| Live logs                                           | `docker compose logs -f` (or `tail -f logs/bot.log`)          |
+| Change a setting                                    | `nano config.yaml`, then `docker compose restart`             |
+| Ship a new version (after `git push` from your Mac) | `deploy/update.sh`                                            |
+| Stop the bot                                        | `docker compose stop` (start again: `docker compose start`)   |
+| Run an AI model comparison                          | `docker compose exec bot python -m bot.ai.compare --live SOL` |
+| Full stats report                                   | `docker compose exec bot python -m bot.evaluation.report`     |
+| Back up now                                         | `docker compose exec -T bot python -m bot.storage.backup`     |
+
 
 Commands with `docker compose exec` run inside the container, using the same code and data as the bot.
 
 ## Troubleshooting
 
 - **"Conflict: another instance of this bot is already running"**: the bot is still running on
-  your Mac (or twice on the server). Stop the extra copy.
-- **`(unhealthy)` in `docker compose ps`**: run `docker compose exec bot python -m bot.health` to
-  see why. "No price data" usually means a network or Binance issue, and the bot keeps reconnecting
-  by itself; you'll also have had a Telegram alert.
+your Mac (or twice on the server). Stop the extra copy.
+- `(unhealthy)` **in** `docker compose ps`: run `docker compose exec bot python -m bot.health` to
+see why. "No price data" usually means a network or Binance issue, and the bot keeps reconnecting
+by itself; you'll also have had a Telegram alert.
 - **Binance errors after locking the key:** check the IP you added matches `curl -4 ifconfig.me`
-  on the server.
-- **Permission denied writing `data/` or `logs/`:** the container user doesn't match the folder
-  owner. Set `BOT_UID` (step 4) and run `docker compose up -d --build`.
+on the server.
+- `PermissionError: [Errno 13] Permission denied: '/app/logs/bot.log'` (or `data/`): the folders
+are owned by root, or by a different user than the container runs as. Fix: `docker compose down`,
+then `sudo chown -R bot:bot data logs`. If `id -u` isn't 1000, also run
+`echo 'export BOT_UID=$(id -u)' >> ~/.bashrc && source ~/.bashrc`. Then `docker compose up -d --build`.
+
