@@ -1,0 +1,20 @@
+services:
+  bot:
+    build:
+      context: .
+      args:
+        UID: ${BOT_UID:-1000}   # set BOT_UID=$(id -u) if your server user isn't uid 1000
+    image: cryptobot:latest
+    container_name: cryptobot
+    restart: unless-stopped     # starts on boot, restarts after crashes
+    env_file: .env              # secrets stay on the server, never in the image
+    volumes:
+      - ./data:/app/data        # database, backups, heartbeat, experiment reports
+      - ./logs:/app/logs        # the bot's own rotating log (5 MB x 5)
+      - ./config.yaml:/app/config.yaml:ro   # edit + `docker compose restart` (no rebuild)
+    stop_grace_period: 30s      # time to send the "stopping" notice and close cleanly
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

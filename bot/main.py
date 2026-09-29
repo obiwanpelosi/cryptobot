@@ -18,6 +18,7 @@ from bot.evaluation.outcomes import OutcomeEvaluator
 from bot.exchange.client import BinanceClient
 from bot.exchange.models import QUOTE_ASSET, Candle, portfolio_value_usdt
 from bot.exchange.streams import PriceStream
+from bot.health import write_heartbeat
 from bot.logging_setup import setup_logging
 from bot.market.candles import CandleStore
 from bot.market.context import MarketContext
@@ -114,6 +115,10 @@ async def reporter(
             except Exception:
                 log.exception("Failed to fetch balances")
         await check_stale(stream, monitor, notifier)
+        try:
+            write_heartbeat(stream_stale=stream.is_stale())
+        except OSError as exc:
+            log.warning("Could not write heartbeat: %s", exc)
         await asyncio.sleep(PRICE_REPORT_SECONDS)
         elapsed += PRICE_REPORT_SECONDS
 

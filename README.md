@@ -23,4 +23,16 @@ uv run pytest                # tests
 uv run ruff check .          # lint
 ```
 
-Deploying from a `requirements.txt`: `uv export --no-dev > requirements.txt`.
+
+## Deploying
+
+The bot runs 24/7 on a VPS in Docker (`Dockerfile`, `docker-compose.yml`): it restarts after
+crashes and reboots, rotates its logs, and backs up its database nightly.
+Step-by-step guide: [deploy/DEPLOY.md](deploy/DEPLOY.md).
+
+```bash
+docker compose up -d --build     # build and start
+docker compose ps                # running? healthy?
+docker compose logs -f           # live logs
+deploy/update.sh                 # on the server: pull + rebuild + restart
+```

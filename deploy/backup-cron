@@ -1,0 +1,2 @@
+# Nightly database backup at 03:30 UTC, keeps 14 days. Install with: crontab deploy/backup-cron
+30 3 * * * cd /opt/cryptobot && docker compose exec -T bot python -m bot.storage.backup >> /opt/cryptobot/logs/backup.log 2>&1
