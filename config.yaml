@@ -28,7 +28,7 @@ fees:
   taker_pct: 0.1                 # include in all P/L calculations
 
 ai:
-  enabled: false                 # set true once OPENROUTER_API_KEY is in .env
+  enabled: true                 # set true once OPENROUTER_API_KEY is in .env
   provider: openrouter           # one key, many models: https://openrouter.ai/models
   strong_model: anthropic/claude-sonnet-5   # entry and target/stop decisions
   light_model: anthropic/claude-haiku-4.5   # near-stop re-checks and /analysis
