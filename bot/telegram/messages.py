@@ -193,9 +193,10 @@ def entry_alert(
     lines.append("<b>Why</b>")
     for c in result.checks:
         mark = "✓" if c.passed else "✗"
+        threshold = "n/a" if c.threshold is None else f"{c.threshold:g}"
         lines.append(
             f"{escape(c.label)}: {_fmt_check_value(c.value)}"
-            f" ({escape(c.op)} {c.threshold:g}) {mark}"
+            f" ({escape(c.op)} {threshold}) {mark}"
         )
     if snap.btc:
         b = snap.btc

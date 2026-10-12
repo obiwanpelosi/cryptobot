@@ -1,0 +1,58 @@
+# Fixed strategy config for the test suite (tests/conftest.py points BOT_CONFIG here),
+# so changing your own config.yaml never changes what the tests check.
+symbols: [SOLUSDT, LINKUSDT]
+context_symbols: [BTCUSDT]
+
+mode: paper            # paper | live-advisory | live-execution (later phase)
+
+timeframes: [15m, 1h, 4h, 1d]
+history_candles: 500   # per timeframe, loaded on startup
+
+dip_rules:                       # set a threshold to null to disable that condition
+  min_drop_from_high_pct: 6      # drop from recent high
+  high_lookback_hours: 72
+  rsi_1h_max: 35
+  require_lower_bollinger_4h: false
+  btc_crash_guard_pct_1h: 3      # if BTC fell more than this in 1h, flag as high-risk
+  # One alert per coin per 24h: stops repeat alerts while one dip keeps falling.
+  cooldown_minutes_per_symbol: 180
+  # Trend filters: only alert when the bigger trend is up. In the 3-year replay
+  # (python -m bot.evaluation.missed_dips --days 1095 --exits) these cut trades in the
+  # 2025-26 downtrend from ~1,160 to ~70. They reduce risk; they did NOT prove more profitable.
+  require_coin_above_ema200_1d: false   # coin price above its 200-day EMA
+  require_btc_above_ema50_1d: false     # BTC price above its 50-day EMA
+
+exit_alerts:
+  profit_targets_pct: [10, 15, 20]
+  stop_atr_multiplier: 2.0       # stop = entry - (ATR_4h * multiplier)
+  trailing_after_pct: 15         # optional trailing stop suggestion once past this
+
+sizing:
+  risk_per_trade_pct: 1.5        # max % of total balance lost if stop is hit
+  max_position_pct: 30           # never suggest more than this % of balance in one trade
+  min_order_usdt: 10
+
+fees:
+  taker_pct: 0.1                 # include in all P/L calculations
+
+ai:
+  enabled: false                 # set true once OPENROUTER_API_KEY is in .env
+  provider: openrouter           # one key, many models: https://openrouter.ai/models
+  strong_model: anthropic/claude-sonnet-5   # entry and target/stop decisions
+  light_model: anthropic/claude-haiku-4.5   # near-stop re-checks and /analysis
+  # Default models for `uv run python -m bot.ai.compare` experiments.
+  candidates:
+    - anthropic/claude-sonnet-5
+    - anthropic/claude-haiku-4.5
+    - openai/gpt-5.4-mini
+    - google/gemini-3.5-flash
+    - deepseek/deepseek-v4-pro
+  shadow_models: []              # also asked on every live call; logged, never shown
+  max_calls_per_hour: 20         # includes shadow calls
+  timeout_seconds: 60
+  max_output_tokens: 1500
+
+# Upcoming macro events (optional, maintained by hand). Shown in /analysis within 7 days.
+macro_events: []
+#  - {date: 2026-10-28, name: FOMC decision}
+#  - {date: 2026-10-14, name: US CPI}

@@ -109,8 +109,9 @@ class Settings(BaseModel):
     strategy: StrategyConfig
 
 
-def load_strategy(config_path: str | Path = PROJECT_ROOT / "config.yaml") -> StrategyConfig:
-    with open(config_path, encoding="utf-8") as fh:
+def load_strategy(config_path: str | Path | None = None) -> StrategyConfig:
+    """config.yaml, or the BOT_CONFIG file if set (the tests use their own fixed config)."""
+    with open(config_path or default_config_path(), encoding="utf-8") as fh:
         raw = yaml.safe_load(fh) or {}
     return StrategyConfig.model_validate(raw)
 

@@ -7,6 +7,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 
 from bot.settings import DipRules
+from bot.signals.rules import TREND_CHECKS
 from bot.storage.models import AICall, Position, Signal, SignalOutcome
 
 HORIZON_ORDER = ["24h", "72h", "7d"]
@@ -25,12 +26,22 @@ def current_rule_signature(rules: DipRules) -> dict[str, float]:
         sig["rsi_1h"] = float(rules.rsi_1h_max)
     if rules.require_lower_bollinger_4h:
         sig["lower_bollinger_4h"] = 0.0
+    if rules.require_coin_above_ema200_1d:
+        sig["coin_above_ema200_1d"] = 1.0
+    if rules.require_btc_above_ema50_1d:
+        sig["btc_above_ema50_1d"] = 1.0
     return sig
 
 
 def signal_rule_signature(signal: Signal) -> dict[str, float]:
+    """The rule settings a signal was made under. Trend filters count as on/off switches."""
     rows = json.loads(signal.rule_values_json or "[]")
-    return {r["name"]: float(r["threshold"]) for r in rows if "threshold" in r}
+    sig = {}
+    for r in rows:
+        if "threshold" not in r:
+            continue
+        sig[r["name"]] = 1.0 if r["name"] in TREND_CHECKS else float(r["threshold"])
+    return sig
 
 
 def same_rules(a: dict[str, float], b: dict[str, float]) -> bool:

@@ -12,7 +12,13 @@ dip_rules:                       # set a threshold to null to disable that condi
   rsi_1h_max: 35
   require_lower_bollinger_4h: false
   btc_crash_guard_pct_1h: 3      # if BTC fell more than this in 1h, flag as high-risk
-  cooldown_minutes_per_symbol: 180
+  # One alert per coin per 24h: stops repeat alerts while one dip keeps falling.
+  cooldown_minutes_per_symbol: 1440
+  # Trend filters: only alert when the bigger trend is up. In the 3-year replay
+  # (python -m bot.evaluation.missed_dips --days 1095 --exits) these cut trades in the
+  # 2025-26 downtrend from ~1,160 to ~70. They reduce risk; they did NOT prove more profitable.
+  require_coin_above_ema200_1d: true   # coin price above its 200-day EMA
+  require_btc_above_ema50_1d: true     # BTC price above its 50-day EMA
 
 exit_alerts:
   profit_targets_pct: [10, 15, 20]

@@ -343,3 +343,37 @@ def test_stats_message_escapes_and_renders_table():
         rules=STRATEGY.dip_rules,
     )
     assert "Signals</b>: 0" in stats_message(report)
+
+
+def test_trend_filters_count_as_switches_in_stats():
+    from bot.signals.rules import TREND_CHECKS
+
+    trend_rows = REAL_RULES[:2] + [
+        {
+            "name": TREND_CHECKS[0],
+            "label": "x",
+            "op": ">",
+            "threshold": 118.4,
+            "value": 120,
+            "passed": True,
+        },
+        {
+            "name": TREND_CHECKS[1],
+            "label": "y",
+            "op": ">",
+            "threshold": 70000.0,
+            "value": 8e4,
+            "passed": True,
+        },
+    ]
+    repo = Repo(make_engine(None))
+    a = make_signal(repo, rules=trend_rows)
+    b = make_signal(
+        repo, rules=[*trend_rows[:2], {**trend_rows[2], "threshold": 131.7}, trend_rows[3]]
+    )
+    plain = make_signal(repo)
+    rules_on = STRATEGY.dip_rules.model_copy(
+        update={"require_coin_above_ema200_1d": True, "require_btc_above_ema50_1d": True}
+    )
+    kept, excluded = split_by_rules([a, b, plain], rules_on, include_all=False)
+    assert kept == [a, b] and excluded == 1  # different EMA prices, same rules

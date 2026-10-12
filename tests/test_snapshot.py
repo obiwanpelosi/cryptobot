@@ -95,3 +95,20 @@ def test_not_loaded_returns_none_and_falls_back_to_candle_price():
     snap = builder.build("SOLUSDT", now_ms=NOW_MS)
     assert snap.price == pytest.approx(float(store.frame("SOLUSDT", "15m")["close"].iloc[-1]))
     assert builder.build("LINKUSDT", now_ms=NOW_MS) is None
+
+
+def test_btc_state_has_daily_emas():
+    builder, store = make_builder()
+    btc = builder.build("SOLUSDT", now_ms=NOW_MS).btc
+    daily = builder.base_indicators("BTCUSDT", "1d")
+    assert btc.ema50_1d == pytest.approx(daily.ema50, rel=1e-5)
+    assert btc.ema200_1d == pytest.approx(daily.ema200, rel=1e-5)
+
+
+def test_old_snapshot_without_btc_emas_still_loads():
+    from bot.market.snapshot import MarketSnapshot
+
+    builder, _ = make_builder()
+    data = builder.build("SOLUSDT", now_ms=NOW_MS).model_dump()
+    del data["btc"]["ema50_1d"], data["btc"]["ema200_1d"]
+    assert MarketSnapshot.model_validate(data).btc.ema50_1d is None

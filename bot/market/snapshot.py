@@ -30,6 +30,9 @@ class BtcState(BaseModel):
     trend_1h: ind.Trend | None
     trend_4h: ind.Trend | None
     trend_1d: ind.Trend | None
+    # Optional so snapshots stored before these fields existed still load.
+    ema50_1d: float | None = None
+    ema200_1d: float | None = None
 
 
 class MarketSnapshot(BaseModel):
@@ -122,6 +125,7 @@ class SnapshotBuilder:
             base = self.base_indicators(self.btc_symbol, tf)
             return ind.trend_label(price, base.ema20, base.ema50, base.ema200) if base else None
 
+        daily = self.base_indicators(self.btc_symbol, "1d")
         return BtcState(
             price=price,
             change_1h_pct=ind.round_sig(ch_1h, 3),
@@ -129,6 +133,8 @@ class SnapshotBuilder:
             trend_1h=trend("1h"),
             trend_4h=trend("4h"),
             trend_1d=trend("1d"),
+            ema50_1d=ind.round_sig(daily.ema50) if daily else None,
+            ema200_1d=ind.round_sig(daily.ema200) if daily else None,
         )
 
     def build(self, symbol: str, *, now_ms: int | None = None) -> MarketSnapshot | None:

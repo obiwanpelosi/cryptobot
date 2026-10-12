@@ -105,3 +105,55 @@ def test_cooldown_boundary():
     assert not in_cooldown(None, 1000, 180)
     assert in_cooldown(0, 180 * 60 - 1, 180)
     assert not in_cooldown(0, 180 * 60, 180)
+
+
+# --- trend filters ---------------------------------------------------------------------------
+
+
+def trend_snap(price=100.0, ema200=90.0, btc_price=80000.0, btc_ema50=70000.0):
+    s = snap()
+    s.price = price
+    s.timeframes["1d"] = tf()
+    s.timeframes["1d"].ema200 = ema200
+    s.btc.price = btc_price
+    s.btc.ema50_1d = btc_ema50
+    return s
+
+
+TREND_RULES = RULES.model_copy(
+    update={"require_coin_above_ema200_1d": True, "require_btc_above_ema50_1d": True}
+)
+
+
+def test_trend_filters_off_by_default():
+    assert [c.name for c in evaluate(trend_snap(ema200=999), RULES).checks] == [
+        "drop_from_high",
+        "rsi_1h",
+    ]
+
+
+def test_trend_filters_pass_and_fail():
+    r = evaluate(trend_snap(), TREND_RULES)
+    assert r.fired
+    assert [c.name for c in r.checks][-2:] == ["coin_above_ema200_1d", "btc_above_ema50_1d"]
+    assert not evaluate(trend_snap(ema200=110), TREND_RULES).fired  # coin below its 200d EMA
+    assert not evaluate(trend_snap(btc_ema50=90000), TREND_RULES).fired  # BTC below its 50d
+    assert not evaluate(trend_snap(price=90.0, ema200=90.0), TREND_RULES).fired  # equal isn't above
+
+
+def test_trend_filters_missing_data_never_pass():
+    r = evaluate(trend_snap(ema200=None, btc_ema50=None), TREND_RULES)
+    assert not r.fired
+    coin, btc = r.checks[-2:]
+    assert coin.threshold is None and not coin.passed and not btc.passed
+
+
+def test_trend_check_in_alert_text():
+    from bot.telegram.messages import entry_alert
+
+    r = evaluate(trend_snap(), TREND_RULES)
+    text = entry_alert(trend_snap(), r, None)
+    assert "Price vs 200d EMA: 100.00 (&gt; 90) ✓" in text
+    assert "BTC vs 50d EMA: 80000.00 (&gt; 70000) ✓" in text
+    missing = evaluate(trend_snap(ema200=None), TREND_RULES)
+    assert "Price vs 200d EMA: 100.00 (&gt; n/a) ✗" in entry_alert(trend_snap(), missing, None)

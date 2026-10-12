@@ -12,8 +12,8 @@ class Check(BaseModel):
     name: str
     label: str
     value: float | None
-    threshold: float
-    op: str  # ">=" or "<="
+    threshold: float | None
+    op: str  # ">=", "<=" or ">"
     passed: bool
 
 
@@ -25,14 +25,22 @@ class RuleResult(BaseModel):
     checks: list[Check]
 
 
-def _check(name: str, label: str, value: float | None, op: str, threshold: float) -> Check:
-    if value is None:
+def _check(
+    name: str, label: str, value: float | None, op: str, threshold: float | None
+) -> Check:
+    if value is None or threshold is None:
         passed = False  # never fire on missing data (e.g. warm-up)
     elif op == ">=":
         passed = value >= threshold
+    elif op == ">":
+        passed = value > threshold
     else:
         passed = value <= threshold
     return Check(name=name, label=label, value=value, threshold=threshold, op=op, passed=passed)
+
+
+# Trend filters are on/off rules (their threshold is a moving average, not a setting).
+TREND_CHECKS = ("coin_above_ema200_1d", "btc_above_ema50_1d")
 
 
 def evaluate(snapshot: MarketSnapshot, rules: DipRules) -> RuleResult:
@@ -62,6 +70,29 @@ def evaluate(snapshot: MarketSnapshot, rules: DipRules) -> RuleResult:
                 tf_4h.bb_pct_b if tf_4h else None,
                 "<=",
                 0.0,
+            )
+        )
+
+    if rules.require_coin_above_ema200_1d:
+        tf_1d = snapshot.timeframes.get("1d")
+        checks.append(
+            _check(
+                "coin_above_ema200_1d",
+                "Price vs 200d EMA",
+                snapshot.price,
+                ">",
+                tf_1d.ema200 if tf_1d else None,
+            )
+        )
+    if rules.require_btc_above_ema50_1d:
+        btc = snapshot.btc
+        checks.append(
+            _check(
+                "btc_above_ema50_1d",
+                "BTC vs 50d EMA",
+                btc.price if btc else None,
+                ">",
+                btc.ema50_1d if btc else None,
             )
         )
 
