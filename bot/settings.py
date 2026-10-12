@@ -52,6 +52,9 @@ class DipRules(BaseModel):
     require_lower_bollinger_4h: bool = False
     btc_crash_guard_pct_1h: float | None = Field(default=None, gt=0)
     cooldown_minutes_per_symbol: int = Field(ge=0)
+    # Trend filters: only alert when the bigger trend is up (see bot.evaluation.missed_dips).
+    require_coin_above_ema200_1d: bool = False
+    require_btc_above_ema50_1d: bool = False
 
 
 class ExitAlerts(BaseModel):

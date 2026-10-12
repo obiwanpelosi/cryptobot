@@ -49,6 +49,7 @@ LABELS = {
     "rsi_too_high": "Near miss: RSI too high",
     "both": "Near miss: both just outside",
     "bollinger": "Near miss: not below lower 4h band",
+    "trend": "Filtered: against the bigger trend",
 }
 
 
@@ -136,6 +137,8 @@ def rule_series(
     out["rsi_1h"] = _round_sig(out["rsi_1h"], 4)
     out["pct_b_4h"] = _round_sig(out["pct_b_4h"], 3)
     out["atr_4h"] = _round_sig(out["atr_4h"], 4)
+    for col in [c for c in out.columns if c.endswith("_1d")]:
+        out[col] = _round_sig(out[col], 6)  # same as the live snapshot's EMA values
     return out.drop(columns=["high_lookback"]).reset_index(drop=True)
 
 
@@ -153,7 +156,20 @@ def passes(series: pd.DataFrame, rules: DipRules, *, drop=None, rsi=None) -> pd.
         mask &= series["rsi_1h"] <= rsi
     if rules.require_lower_bollinger_4h:
         mask &= series["pct_b_4h"] <= 0
-    return mask.fillna(False).astype(bool)
+    return mask.fillna(False).astype(bool) & trend_ok(series, rules)
+
+
+def trend_ok(series: pd.DataFrame, rules: DipRules) -> pd.Series:
+    """The trend-filter rules (same as bot/signals/rules.py); missing data never passes."""
+    mask = pd.Series(True, index=series.index)
+    if rules.require_coin_above_ema200_1d:
+        mask &= _gt(series["price"], series.get("coin_ema200_1d", pd.Series(index=series.index)))
+    if rules.require_btc_above_ema50_1d:
+        mask &= _gt(
+            series.get("btc_price", pd.Series(index=series.index)),
+            series.get("btc_ema50_1d", pd.Series(index=series.index)),
+        )
+    return mask
 
 
 def find_dips(times: pd.Series, mask: pd.Series, cooldown_minutes: int) -> list[int]:
@@ -201,7 +217,7 @@ def classify(row: pd.Series, rules: DipRules) -> str:
     rsi_ok = rules.rsi_1h_max is None or row["rsi_1h"] <= rules.rsi_1h_max
     bb_ok = not rules.require_lower_bollinger_4h or row["pct_b_4h"] <= 0
     if drop_ok and rsi_ok and bb_ok:
-        return "alerted"
+        return "alerted" if bool(trend_ok(row.to_frame().T, rules).iloc[0]) else "trend"
     if drop_ok and rsi_ok:
         return "bollinger"
     if drop_ok:
@@ -505,7 +521,7 @@ def render_report(
     ]
     for key, title in LABELS.items():
         group = [d for d in dips if d.label == key]
-        if not group and key == "bollinger":
+        if not group and key in ("bollinger", "trend"):
             continue
         s = summarize(group)
         lines.append(
@@ -648,6 +664,14 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--near-drop", type=float, default=4.0, help="near-miss minimum drop %%")
     parser.add_argument("--near-rsi", type=float, default=45.0, help="near-miss maximum RSI")
     parser.add_argument("--db", type=Path, help="bot database to cross-check live alerts against")
+    parser.add_argument(
+        "--exits", action="store_true", help="compare exit rules (walk-forward, see --train-end)"
+    )
+    parser.add_argument(
+        "--train-end",
+        default="2024-12-31",
+        help="with --exits: choose the best setup on data up to this date, test after it",
+    )
     return parser.parse_args(argv)
 
 
@@ -677,6 +701,19 @@ def main(argv: list[str] | None = None) -> int:
         near_rsi=args.near_rsi,
     )
     report += "\n\n" + render_filters(compare_filters(data, strategy, start_ms=start_ms))
+    if args.exits:
+        from bot.evaluation.exits import render_walk_forward, walk_forward
+
+        train_end_ms = int(pd.Timestamp(args.train_end, tz="UTC").timestamp() * 1000) + 86_399_999
+        cells = walk_forward(
+            data,
+            strategy,
+            start_ms=start_ms,
+            train_end_ms=train_end_ms,
+            find_dips=find_dips,
+            passes=passes,
+        )
+        report += "\n\n" + render_walk_forward(cells, train_end_ms)
     if args.db:
         report += "\n\n## Cross-check with the live bot\n\n```\n"
         report += "\n".join(cross_check(dips, args.db, start_ms)) + "\n```\n"
