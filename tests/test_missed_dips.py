@@ -226,3 +226,83 @@ async def test_fetch_klines_pages_without_gaps_or_duplicates():
     assert len(out) == total == len({c.open_time_ms for c in out})
     assert len(calls) == 3
     assert all(b.open_time_ms - a.open_time_ms == step for a, b in zip(out, out[1:], strict=False))
+
+
+# --- trend filters ------------------------------------------------------------------------
+
+
+def test_daily_ema_uses_closed_days_only():
+    days = 260
+    closes = [100.0] * (days - 1) + [1000.0]  # the last day jumps
+    c1d = candles("1d", closes, start=T0)
+    jump_close_time = c1d[-1].open_time_ms + INTERVAL_MS["1d"]
+    n15 = days * 96
+    c15 = flat("15m", n15)
+    series = md.rule_series(
+        c15,
+        flat("1h", days * 24),
+        flat("4h", days * 6),
+        flat("15m", n15),
+        lookback_hours=72,
+        c1d=c1d,
+        btc1d=c1d,
+    )
+    before = series[series["t"] < jump_close_time]["coin_ema20_1d"].iloc[-1]
+    assert before == pytest.approx(100.0)  # the jump day isn't visible until it closes
+
+
+def test_trend_filter_masks():
+    s = pd.DataFrame(
+        {
+            "price": [110.0, 90.0],
+            "coin_ema50_1d": [105.0, 95.0],
+            "coin_ema200_1d": [100.0, 100.0],
+            "btc_price": [50.0, 50.0],
+            "btc_ema20_1d": [48.0, 52.0],
+            "btc_ema50_1d": [46.0, 51.0],
+            "btc_ema200_1d": [40.0, 45.0],
+        }
+    )
+    f = md.TREND_FILTERS
+    assert f["none"](s).tolist() == [True, True]
+    assert f["coin > 200d EMA"](s).tolist() == [True, False]
+    assert f["coin 50d > 200d EMA"](s).tolist() == [True, False]
+    assert f["BTC > 200d EMA"](s).tolist() == [True, True]
+    assert f["BTC daily trend up"](s).tolist() == [True, False]
+    missing = s.assign(btc_ema200_1d=[None, None])
+    assert f["BTC > 200d EMA"](missing).tolist() == [False, False]  # no data never passes
+
+
+def test_compare_filters_none_matches_alerted_and_filters_reduce():
+    n = 7 * 96 + 400
+    step = INTERVAL_MS["15m"]
+    drops = [0.0] * n
+    for i in (10, 80):
+        drops[i] = 7.0
+    series = pd.DataFrame(
+        {
+            "t": [T0 + (i + 1) * step for i in range(n)],
+            "price": [100.0] * n,
+            "drop_pct": drops,
+            "rsi_1h": [30.0] * n,
+            "pct_b_4h": [0.5] * n,
+            "atr_4h": [2.0] * n,
+            "btc_change_1h_pct": [0.0] * n,
+            "coin_ema20_1d": [1.0] * n,
+            "coin_ema50_1d": [1.0] * n,
+            "coin_ema200_1d": [1.0] * n,
+            "btc_price": [50.0] * n,
+            "btc_ema20_1d": [60.0] * n,
+            "btc_ema50_1d": [60.0] * n,
+            "btc_ema200_1d": [60.0] * n,
+        }
+    )
+    sd = md.SymbolData("SOLUSDT", series, path_after(T0 + step, [100.0] * n))
+    rows = {(name, cd): s for name, cd, s in md.compare_filters([sd], STRATEGY, start_ms=T0)}
+    assert rows[("none", "every 3h (current)")].count == 2
+    assert rows[("coin > 200d EMA", "every 3h (current)")].count == 2  # price above
+    assert rows[("BTC > 200d EMA", "every 3h (current)")].count == 0  # BTC below
+    assert rows[("none", "one per 24h")].count == 1  # 70 x 15m apart < 24h
+    assert "## Trend filters" in md.render_filters(
+        list(md.compare_filters([sd], STRATEGY, start_ms=T0))
+    )

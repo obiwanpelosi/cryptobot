@@ -66,6 +66,16 @@ def _frame(candles: list[Candle], interval: str) -> pd.DataFrame:
     return df
 
 
+def _daily_emas(candles: list[Candle], prefix: str) -> tuple[pd.DataFrame, list[str]]:
+    d = _frame(candles, "1d")
+    cols = []
+    for n in (20, 50, 200):
+        col = f"{prefix}_ema{n}_1d"
+        d[col] = ind.ema(d["close"], n)
+        cols.append(col)
+    return d, cols
+
+
 def _round_sig(series: pd.Series, digits: int) -> pd.Series:
     return series.map(lambda v: ind.round_sig(v, digits) if pd.notna(v) else np.nan)
 
@@ -77,8 +87,13 @@ def rule_series(
     btc15: list[Candle],
     *,
     lookback_hours: int,
+    c1d: list[Candle] | None = None,
+    btc1d: list[Candle] | None = None,
 ) -> pd.DataFrame:
-    """Rule inputs at every 15m close `t`, using only candles closed by `t` (no look-ahead)."""
+    """Rule inputs at every 15m close `t`, using only candles closed by `t` (no look-ahead).
+
+    With daily candles, also adds the coin's and BTC's daily EMA 20/50/200 (for trend filters).
+    """
     base = _frame(c15, "15m").rename(columns={"close": "price"})
     base = base[["avail", "price"]].rename(columns={"avail": "t"}).sort_values("t")
 
@@ -93,13 +108,19 @@ def rule_series(
 
     b = _frame(btc15, "15m")
     b["btc_change_1h_pct"] = (b["close"] / b["close"].shift(4) - 1) * 100
+    b["btc_price"] = b["close"]
 
-    out = base
-    for right, cols in (
+    merges = [
         (h, ["rsi_1h", "high_lookback"]),
         (f, ["bb_upper", "bb_lower", "atr_4h"]),
-        (b, ["btc_change_1h_pct"]),
-    ):
+        (b, ["btc_change_1h_pct", "btc_price"]),
+    ]
+    for daily, prefix in ((c1d, "coin"), (btc1d, "btc")):
+        if daily:
+            merges.append(_daily_emas(daily, prefix))
+
+    out = base
+    for right, cols in merges:
         out = pd.merge_asof(
             out, right[["avail", *cols]].sort_values("avail"), left_on="t", right_on="avail"
         ).drop(columns="avail")
@@ -363,6 +384,73 @@ def analyse(
     return dips, grid
 
 
+# --- trend filters ------------------------------------------------------------------------------
+
+
+def _gt(a: pd.Series, b: pd.Series) -> pd.Series:
+    """a > b, where missing data on either side counts as False (never passes, as live)."""
+    a = pd.to_numeric(a, errors="coerce")
+    b = pd.to_numeric(b, errors="coerce")
+    return (a > b).fillna(False).astype(bool)
+
+
+TREND_FILTERS = {
+    "none": lambda s: pd.Series(True, index=s.index),
+    "coin > 200d EMA": lambda s: _gt(s["price"], s["coin_ema200_1d"]),
+    "coin 50d > 200d EMA": lambda s: _gt(s["coin_ema50_1d"], s["coin_ema200_1d"]),
+    "BTC > 200d EMA": lambda s: _gt(s["btc_price"], s["btc_ema200_1d"]),
+    "BTC > 50d EMA": lambda s: _gt(s["btc_price"], s["btc_ema50_1d"]),
+    # Same definition as the bot's "trend 1d up" (indicators.trend_label).
+    "BTC daily trend up": lambda s: (
+        _gt(s["btc_price"], s["btc_ema20_1d"])
+        & _gt(s["btc_ema20_1d"], s["btc_ema50_1d"])
+        & _gt(s["btc_ema50_1d"], s["btc_ema200_1d"])
+    ),
+}
+FILTER_COOLDOWNS = {"every 3h (current)": None, "one per 24h": 24 * 60}
+
+
+def compare_filters(
+    data: list[SymbolData], strategy: StrategyConfig, *, start_ms: int
+) -> list[tuple[str, str, Summary]]:
+    """Current thresholds + each trend filter, with the current cooldown and a 24h one."""
+    rules = strategy.dip_rules
+    memo: dict[tuple[str, int], Dip] = {}
+    rows = []
+    for name, trend in TREND_FILTERS.items():
+        for cooldown_label, cooldown in FILTER_COOLDOWNS.items():
+            minutes = rules.cooldown_minutes_per_symbol if cooldown is None else cooldown
+            picked = []
+            for sd in data:
+                s = sd.series
+                mask = passes(s, rules) & trend(s) & (s["t"] >= start_ms)
+                for idx in find_dips(s["t"], mask, minutes):
+                    key = (sd.symbol, idx)
+                    if key not in memo:
+                        dip = make_dip(sd.symbol, s, idx, rules)
+                        memo[key] = score(dip, s["atr_4h"].iloc[idx], sd.path, strategy)
+                    picked.append(memo[key])
+            rows.append((name, cooldown_label, summarize(picked)))
+    return rows
+
+
+def render_filters(rows: list[tuple[str, str, Summary]]) -> str:
+    lines = [
+        "## Trend filters (current drop/RSI thresholds)",
+        "",
+        "Only alert on a dip when the bigger trend agrees (daily EMAs, closed daily candles only).",
+        "",
+        "| filter | alerts | distinct dips | win rate | avg | total | target first | stop first |",
+        "|---|---|---|---|---|---|---|---|",
+    ]
+    for name, cooldown_label, s in rows:
+        lines.append(
+            f"| {name} · {cooldown_label} | {s.count} | {s.distinct} | {_pct(s.win_rate, False)}"
+            f" | {_pct(s.avg_pct)} | {_pct(s.total_pct)} | {s.target_first} | {s.stop_first} |"
+        )
+    return "\n".join(lines)
+
+
 # --- reporting ------------------------------------------------------------------------------------
 
 
@@ -518,12 +606,16 @@ async def load_data(
 
     async with httpx.AsyncClient() as http:
         btc15 = await cached_klines(btc_symbol, "15m", warm("15m"), end_ms, http=http)
+        btc1d = await cached_klines(btc_symbol, "1d", warm("1d"), end_ms, http=http)
         data = []
         for symbol in symbols:
             c15 = await cached_klines(symbol, "15m", warm("15m"), end_ms, http=http)
             c1h = await cached_klines(symbol, "1h", warm("1h"), end_ms, http=http)
             c4h = await cached_klines(symbol, "4h", warm("4h"), end_ms, http=http)
-            series = rule_series(c15, c1h, c4h, btc15, lookback_hours=lookback_hours)
+            c1d = await cached_klines(symbol, "1d", warm("1d"), end_ms, http=http)
+            series = rule_series(
+                c15, c1h, c4h, btc15, lookback_hours=lookback_hours, c1d=c1d, btc1d=btc1d
+            )
             data.append(SymbolData(symbol, series, c15))
     return data, start_ms
 
@@ -565,6 +657,7 @@ def main(argv: list[str] | None = None) -> int:
         near_drop=args.near_drop,
         near_rsi=args.near_rsi,
     )
+    report += "\n\n" + render_filters(compare_filters(data, strategy, start_ms=start_ms))
     if args.db:
         report += "\n\n## Cross-check with the live bot\n\n```\n"
         report += "\n".join(cross_check(dips, args.db, start_ms)) + "\n```\n"
