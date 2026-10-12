@@ -306,3 +306,19 @@ def test_compare_filters_none_matches_alerted_and_filters_reduce():
     assert "## Trend filters" in md.render_filters(
         list(md.compare_filters([sd], STRATEGY, start_ms=T0))
     )
+
+
+def test_fast_slicing_gives_the_same_score():
+    n = 3 * 7 * 96
+    prices = [100.0 + (i % 50) * 0.3 - (i // 300) * 2 for i in range(n)]
+    path = path_after(T0, prices)
+    times = [c.open_time_ms for c in path]
+    for start in (0, 200, 700):
+        t = T0 + start * INTERVAL_MS["15m"]
+        slow = md.score(dip_at(price=prices[start], t=t), 2.0, path, STRATEGY)
+        fast = md.score(dip_at(price=prices[start], t=t), 2.0, path, STRATEGY, times)
+        assert (fast.first_hit, fast.result_pct, fast.worst_pct) == (
+            slow.first_hit,
+            slow.result_pct,
+            slow.worst_pct,
+        )

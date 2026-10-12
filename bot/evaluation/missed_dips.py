@@ -20,6 +20,7 @@ import math
 import sqlite3
 import sys
 import time
+from bisect import bisect_left
 from collections.abc import Iterable
 from dataclasses import asdict, dataclass
 from decimal import Decimal
@@ -37,6 +38,7 @@ from bot.settings import PROJECT_ROOT, DipRules, StrategyConfig, load_settings
 from bot.signals.sizing import fee_fraction, target_price
 
 REPORT_DIR = PROJECT_ROOT / "data" / "experiments"
+MAX_DAYS = 3 * 365
 HOLD_SECONDS = 7 * 24 * 3600
 WARMUP_CANDLES = 250
 GRID_DROPS = [3.0, 4.0, 5.0, 6.0, 7.0, 8.0]
@@ -232,7 +234,13 @@ class Dip:
     worst_pct: float | None = None
 
 
-def score(dip: Dip, atr_4h: float, path_candles: list[Candle], strategy: StrategyConfig) -> Dip:
+def score(
+    dip: Dip,
+    atr_4h: float,
+    path_candles: list[Candle],
+    strategy: StrategyConfig,
+    open_times: list[int] | None = None,
+) -> Dip:
     fee = float(fee_fraction(strategy.fees))
     first_pct = min(strategy.exit_alerts.profit_targets_pct)
     if not atr_4h or math.isnan(atr_4h):
@@ -243,6 +251,10 @@ def score(dip: Dip, atr_4h: float, path_candles: list[Candle], strategy: Strateg
         target_price(Decimal(str(dip.price)), Decimal(str(first_pct)), Decimal(str(fee)))
     )
     ts = dip.t_ms // 1000
+    if open_times is not None:  # slice the 7 days after the dip instead of scanning everything
+        lo = bisect_left(open_times, dip.t_ms - 60_000)
+        hi = bisect_left(open_times, dip.t_ms + HOLD_SECONDS * 1000)
+        path_candles = path_candles[lo:hi]
     path = window(path_candles, ts, HOLD_SECONDS)
     if dip.stop <= 0 or not covers(path, ts, HOLD_SECONDS):
         dip.first_hit = "pending"  # not 7 days of data yet
@@ -336,6 +348,9 @@ class SymbolData:
     series: pd.DataFrame
     path: list[Candle]
 
+    def __post_init__(self) -> None:
+        self.open_times = [c.open_time_ms for c in self.path]  # for fast 7-day slicing
+
 
 def analyse(
     data: list[SymbolData],
@@ -355,7 +370,7 @@ def analyse(
         key = (sd.symbol, idx)
         if key not in memo:
             dip = make_dip(sd.symbol, sd.series, idx, rules)
-            memo[key] = score(dip, sd.series["atr_4h"].iloc[idx], sd.path, strategy)
+            memo[key] = score(dip, sd.series["atr_4h"].iloc[idx], sd.path, strategy, sd.open_times)
         return memo[key]
 
     for sd in data:
@@ -428,7 +443,9 @@ def compare_filters(
                     key = (sd.symbol, idx)
                     if key not in memo:
                         dip = make_dip(sd.symbol, s, idx, rules)
-                        memo[key] = score(dip, s["atr_4h"].iloc[idx], sd.path, strategy)
+                        memo[key] = score(
+                            dip, s["atr_4h"].iloc[idx], sd.path, strategy, sd.open_times
+                        )
                     picked.append(memo[key])
             rows.append((name, cooldown_label, summarize(picked)))
     return rows
@@ -624,7 +641,9 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    parser.add_argument("--days", type=int, default=90, help="how far back to replay (max 365)")
+    parser.add_argument(
+        "--days", type=int, default=90, help=f"how far back to replay (max {MAX_DAYS})"
+    )
     parser.add_argument("--symbols", help="e.g. SOL,LINK (default: config symbols)")
     parser.add_argument("--near-drop", type=float, default=4.0, help="near-miss minimum drop %%")
     parser.add_argument("--near-rsi", type=float, default=45.0, help="near-miss maximum RSI")
@@ -634,7 +653,7 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
-    days = max(1, min(args.days, 365))
+    days = max(1, min(args.days, MAX_DAYS))
     strategy = load_settings().strategy
     symbols = strategy.symbols
     if args.symbols:
