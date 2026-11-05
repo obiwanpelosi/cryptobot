@@ -377,3 +377,28 @@ def test_trend_filters_count_as_switches_in_stats():
     )
     kept, excluded = split_by_rules([a, b, plain], rules_on, include_all=False)
     assert kept == [a, b] and excluded == 1  # different EMA prices, same rules
+
+
+def test_stats_split_with_and_against_trend():
+    from bot.evaluation.scoring import is_against_trend
+
+    against_rows = REAL_RULES[:2] + [
+        {
+            "name": "btc_above_ema50_1d",
+            "label": "BTC vs 50d EMA",
+            "op": ">",
+            "threshold": 80382.3,
+            "value": 77022.0,
+            "passed": False,
+        },
+    ]
+    repo = Repo(make_engine(None))
+    ok = make_signal(repo)
+    bad = make_signal(repo, rules=against_rows)
+    assert not is_against_trend(ok) and is_against_trend(bad)
+    outcomes = {ok.id: {"7d": outcome(ok.id, "target")}, bad.id: {"7d": outcome(bad.id, "stop")}}
+    stats = {s.name: s for s in score_strategies([ok, bad], outcomes, [], "7d")}
+    assert stats["With trend"].total_pct == 10.0
+    assert stats["Against trend"].total_pct == -4.2
+    # no split rows when nothing was against the trend
+    assert "Against trend" not in {s.name for s in score_strategies([ok], outcomes, [], "7d")}

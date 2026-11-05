@@ -19,6 +19,9 @@ dip_rules:                       # set a threshold to null to disable that condi
   # 2025-26 downtrend from ~1,160 to ~70. They reduce risk; they did NOT prove more profitable.
   require_coin_above_ema200_1d: true   # coin price above its 200-day EMA
   require_btc_above_ema50_1d: true     # BTC price above its 50-day EMA
+  # warn: dips against the trend are still alerted, with a warning, and you decide.
+  # block: they are not alerted at all.
+  trend_filter_mode: warn
 
 exit_alerts:
   profit_targets_pct: [10, 15, 20]

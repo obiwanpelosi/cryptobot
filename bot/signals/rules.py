@@ -23,11 +23,11 @@ class RuleResult(BaseModel):
     high_risk: bool
     btc_change_1h_pct: float | None
     checks: list[Check]
+    # Trend checks that failed while trend_filter_mode is "warn" (the alert still fires).
+    against_trend: list[Check] = []
 
 
-def _check(
-    name: str, label: str, value: float | None, op: str, threshold: float | None
-) -> Check:
+def _check(name: str, label: str, value: float | None, op: str, threshold: float | None) -> Check:
     if value is None or threshold is None:
         passed = False  # never fire on missing data (e.g. warm-up)
     elif op == ">=":
@@ -102,12 +102,17 @@ def evaluate(snapshot: MarketSnapshot, rules: DipRules) -> RuleResult:
         and btc_change is not None
         and btc_change <= -rules.btc_crash_guard_pct_1h
     )
+    dip_checks = [c for c in checks if c.name not in TREND_CHECKS]
+    failed_trend = [c for c in checks if c.name in TREND_CHECKS and not c.passed]
+    warn = rules.trend_filter_mode == "warn"
+    fired = bool(dip_checks) and all(c.passed for c in dip_checks) and (warn or not failed_trend)
     return RuleResult(
         symbol=snapshot.symbol,
-        fired=bool(checks) and all(c.passed for c in checks),
+        fired=fired,
         high_risk=high_risk,
         btc_change_1h_pct=btc_change,
         checks=checks,
+        against_trend=failed_trend if warn else [],
     )
 
 

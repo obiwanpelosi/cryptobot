@@ -320,3 +320,20 @@ def test_replayed_test_signal_gets_note():
     assert test_ctx["note"] == TEST_THRESHOLDS_NOTE
     assert "note" not in real_ctx
     assert real_ctx["now_utc"] == "2026-09-28 09:00 UTC"  # replay sees the signal's own time
+
+
+def test_entry_context_lists_against_trend_checks():
+    from tests.test_rules import WARN_RULES, trend_snap
+
+    s = trend_snap(btc_ema50=90000)
+    ctx = json.loads(
+        entry_context(
+            snapshot=s,
+            rule_result=evaluate(s, WARN_RULES),
+            suggestion=None,
+            portfolio={},
+            history=[],
+        )
+    )
+    assert ctx["against_trend"] == ["BTC vs 50d EMA"]
+    assert "against_trend" in system_prompt(load_strategy())

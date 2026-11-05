@@ -55,6 +55,9 @@ class DipRules(BaseModel):
     # Trend filters: only alert when the bigger trend is up (see bot.evaluation.missed_dips).
     require_coin_above_ema200_1d: bool = False
     require_btc_above_ema50_1d: bool = False
+    # "block": a dip against the trend is not alerted. "warn": it is alerted with a warning,
+    # and you decide.
+    trend_filter_mode: Literal["block", "warn"] = "block"
 
 
 class ExitAlerts(BaseModel):

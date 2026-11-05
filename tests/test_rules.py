@@ -157,3 +157,40 @@ def test_trend_check_in_alert_text():
     assert "BTC vs 50d EMA: 80000.00 (&gt; 70000) ✓" in text
     missing = evaluate(trend_snap(ema200=None), TREND_RULES)
     assert "Price vs 200d EMA: 100.00 (&gt; n/a) ✗" in entry_alert(trend_snap(), missing, None)
+
+
+WARN_RULES = TREND_RULES.model_copy(update={"trend_filter_mode": "warn"})
+
+
+def test_warn_mode_alerts_against_the_trend_with_a_warning():
+    r = evaluate(trend_snap(btc_ema50=90000), WARN_RULES)  # BTC below its 50d EMA
+    assert r.fired
+    assert [c.name for c in r.against_trend] == ["btc_above_ema50_1d"]
+    blocked = evaluate(trend_snap(btc_ema50=90000), TREND_RULES)  # default: block
+    assert not blocked.fired and blocked.against_trend == []
+
+
+def test_warn_mode_still_needs_the_dip_rules():
+    assert not evaluate(
+        trend_snap(btc_ema50=90000).model_copy(update={"drop_from_high_pct": 2.0}), WARN_RULES
+    ).fired
+    r = evaluate(trend_snap(), WARN_RULES)  # with the trend: no warning
+    assert r.fired and r.against_trend == []
+
+
+def test_warn_mode_missing_trend_data_warns_not_blocks():
+    r = evaluate(trend_snap(ema200=None), WARN_RULES)
+    assert r.fired and [c.name for c in r.against_trend] == ["coin_above_ema200_1d"]
+
+
+def test_against_trend_banner_in_alert():
+    from bot.telegram.messages import entry_alert
+
+    s = trend_snap(btc_price=77022.0, btc_ema50=80382.3)
+    text = entry_alert(s, evaluate(s, WARN_RULES), None)
+    assert "⚠️ <b>AGAINST THE TREND</b>: BTC 77,022.00 is below its 50-day EMA 80,382.30." in text
+    assert "Your call." in text
+    assert "BTC vs 50d EMA: 77022.00 (&gt; 80382.3) ✗" in text
+    assert "AGAINST THE TREND" not in entry_alert(
+        trend_snap(), evaluate(trend_snap(), WARN_RULES), None
+    )

@@ -44,6 +44,12 @@ def signal_rule_signature(signal: Signal) -> dict[str, float]:
     return sig
 
 
+def is_against_trend(signal: Signal) -> bool:
+    """True if the signal was alerted with a failed trend check (trend_filter_mode: warn)."""
+    rows = json.loads(signal.rule_values_json or "[]")
+    return any(r.get("name") in TREND_CHECKS and r.get("passed") is False for r in rows)
+
+
 def same_rules(a: dict[str, float], b: dict[str, float]) -> bool:
     return a.keys() == b.keys() and all(abs(a[k] - b[k]) < 1e-9 for k in a)
 
@@ -145,11 +151,14 @@ def score_strategies(
     signals = [s for s in signals if horizon in outcomes.get(s.id, {})]
     baseline = StrategyStats("Rules baseline")
     you = StrategyStats("You")
+    with_trend = StrategyStats("With trend")
+    against = StrategyStats("Against trend")
     for s in signals:
         outcome = outcomes[s.id][horizon]
         baseline.record(True, outcome)
         if s.user_action in ("entered", "ignored"):
             you.record(s.user_action == "entered", outcome)
+        (against if is_against_trend(s) else with_trend).record(True, outcome)
 
     ids = {s.id for s in signals}
     models = []
@@ -163,7 +172,8 @@ def score_strategies(
             stats.cost_per_call = cost / calls if calls else None
             models.append(stats)
 
-    result = [baseline] + models + ([you] if you.judged else [])
+    trend_split = [with_trend, against] if against.judged else []
+    result = [baseline] + models + trend_split + ([you] if you.judged else [])
     return sorted(result, key=lambda st: st.total_pct, reverse=True)
 
 

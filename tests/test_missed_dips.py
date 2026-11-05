@@ -322,3 +322,21 @@ def test_fast_slicing_gives_the_same_score():
             slow.result_pct,
             slow.worst_pct,
         )
+
+
+def test_replay_warn_mode_does_not_block():
+    rules = STRATEGY.dip_rules.model_copy(
+        update={"require_btc_above_ema50_1d": True, "trend_filter_mode": "warn"}
+    )
+    s = pd.DataFrame(
+        {
+            "drop_pct": [7.0],
+            "rsi_1h": [30.0],
+            "pct_b_4h": [0.5],
+            "price": [100.0],
+            "btc_price": [70000.0],
+            "btc_ema50_1d": [80000.0],
+        }
+    )
+    assert md.passes(s, rules).tolist() == [True]
+    assert md.classify(s.iloc[0], rules) == "alerted"

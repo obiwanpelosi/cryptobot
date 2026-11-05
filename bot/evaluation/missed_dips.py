@@ -156,7 +156,8 @@ def passes(series: pd.DataFrame, rules: DipRules, *, drop=None, rsi=None) -> pd.
         mask &= series["rsi_1h"] <= rsi
     if rules.require_lower_bollinger_4h:
         mask &= series["pct_b_4h"] <= 0
-    return mask.fillna(False).astype(bool) & trend_ok(series, rules)
+    mask = mask.fillna(False).astype(bool)
+    return mask & trend_ok(series, rules) if rules.trend_filter_mode == "block" else mask
 
 
 def trend_ok(series: pd.DataFrame, rules: DipRules) -> pd.Series:
@@ -217,6 +218,8 @@ def classify(row: pd.Series, rules: DipRules) -> str:
     rsi_ok = rules.rsi_1h_max is None or row["rsi_1h"] <= rules.rsi_1h_max
     bb_ok = not rules.require_lower_bollinger_4h or row["pct_b_4h"] <= 0
     if drop_ok and rsi_ok and bb_ok:
+        if rules.trend_filter_mode == "warn":
+            return "alerted"
         return "alerted" if bool(trend_ok(row.to_frame().T, rules).iloc[0]) else "trend"
     if drop_ok and rsi_ok:
         return "bollinger"

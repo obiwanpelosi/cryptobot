@@ -34,6 +34,8 @@ How to answer:
 - Be conservative and honest about uncertainty. "wait", "skip" or "hold" are good answers \
 when the evidence is mixed. Confidence should reflect genuine uncertainty; markets are noisy.
 - Weigh the BTC trend heavily: SOL and LINK usually follow BTC.
+- If "against_trend" lists anything, this dip is against the bigger trend (coin below its \
+200-day EMA or BTC below its 50-day EMA). Historically those dips were riskier; say so plainly.
 - Never promise or predict returns. Talk about probabilities and risks.
 - suggested_stop is the stop price you would use (0 if you have no view). It is shown to the \
 user as your opinion; their rule-based stop and position size are not changed by it.
@@ -164,6 +166,7 @@ def entry_context(
         "market_snapshot": snapshot.model_dump(mode="json"),
         "rule_checks": ([c.model_dump() for c in rule_result.checks] if rule_result else None),
         "high_risk_btc_crash_guard": rule_result.high_risk if rule_result else None,
+        "against_trend": ([c.label for c in rule_result.against_trend] if rule_result else None),
         "suggestion": suggestion_data,
         "portfolio": portfolio,
         "recent_trades_this_symbol": history,

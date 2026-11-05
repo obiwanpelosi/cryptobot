@@ -101,7 +101,10 @@ class SignalEngine:
                 symbol,
                 result.fired,
                 result.high_risk,
-                " ".join(f"{c.name}={c.value}" for c in result.checks),
+                " ".join(
+                    f"{c.name}={c.value}{c.op}{c.threshold}{'✓' if c.passed else '✗'}"
+                    for c in result.checks
+                ),
             )
             if not result.fired:
                 return None

@@ -158,9 +158,7 @@ def analysis_message(snap: MarketSnapshot) -> str:
         if d.funding_rate_pct is not None:
             parts.append(f"Funding {fmt_pct(d.funding_rate_pct, 4)}")
         if d.open_interest_usdt is not None:
-            parts.append(
-                f"OI {fmt_big(d.open_interest_usdt)} (24h {fmt_pct(d.oi_change_24h_pct)})"
-            )
+            parts.append(f"OI {fmt_big(d.open_interest_usdt)} (24h {fmt_pct(d.oi_change_24h_pct)})")
         if parts:
             lines.append(" · ".join(parts))
     if snap.sentiment:
@@ -179,14 +177,21 @@ def _fmt_check_value(value: float | None) -> str:
     return "n/a" if value is None else f"{value:.2f}"
 
 
-def entry_alert(
-    snap: MarketSnapshot, result: RuleResult, suggestion: Suggestion | None
-) -> str:
+def entry_alert(snap: MarketSnapshot, result: RuleResult, suggestion: Suggestion | None) -> str:
     name = escape(base_asset(snap.symbol))
     lines = []
     if result.high_risk:
         lines.append(
             f"⚠️ <b>HIGH RISK</b>: BTC {fmt_pct(result.btc_change_1h_pct)} in the last hour"
+        )
+    for c in result.against_trend:
+        what = "BTC" if c.name == "btc_above_ema50_1d" else name
+        avg = "50-day" if c.name == "btc_above_ema50_1d" else "200-day"
+        level = "n/a" if c.threshold is None else fmt_price(c.threshold)
+        now = "n/a" if c.value is None else fmt_price(c.value)
+        lines.append(
+            f"⚠️ <b>AGAINST THE TREND</b>: {what} {now} is below its {avg} EMA {level}."
+            " Dips like this have historically been riskier. Your call."
         )
     lines.append(f"📉 <b>Dip signal: {name}</b> at {fmt_price(snap.price)}")
     lines.append("")
@@ -195,8 +200,7 @@ def entry_alert(
         mark = "✓" if c.passed else "✗"
         threshold = "n/a" if c.threshold is None else f"{c.threshold:g}"
         lines.append(
-            f"{escape(c.label)}: {_fmt_check_value(c.value)}"
-            f" ({escape(c.op)} {threshold}) {mark}"
+            f"{escape(c.label)}: {_fmt_check_value(c.value)} ({escape(c.op)} {threshold}) {mark}"
         )
     if snap.btc:
         b = snap.btc
@@ -213,8 +217,7 @@ def entry_alert(
         lines.append(f"No trade suggested: {escape(suggestion.reason or '')}")
         if suggestion.stop > 0:
             lines.append(
-                f"Stop would be {fmt_price(suggestion.stop)}"
-                f" (-{suggestion.stop_distance_pct:.1f}%)"
+                f"Stop would be {fmt_price(suggestion.stop)} (-{suggestion.stop_distance_pct:.1f}%)"
             )
     else:
         cap = ""
@@ -231,9 +234,7 @@ def entry_alert(
             f" · loss if stopped: {suggestion.loss_at_stop_usdt:,.2f} USDT"
         )
         for t in suggestion.targets:
-            lines.append(
-                f"Target +{t.pct:g}% @ {fmt_price(t.price)} → +{t.gain_usdt:,.2f} USDT"
-            )
+            lines.append(f"Target +{t.pct:g}% @ {fmt_price(t.price)} → +{t.gain_usdt:,.2f} USDT")
         lines.append("<i>All P/L after fees.</i>")
     lines.append("")
     lines.append("<i>Advisory only. You place orders on Binance yourself.</i>")
@@ -331,9 +332,7 @@ def position_alert_text(
     if "stop_hit" in kinds:
         lines.append(f"🛑 <b>{name} #{p.id} hit its stop</b> {fmt_price(p.stop_price)}")
     elif "near_stop" in kinds:
-        lines.append(
-            f"⚠️ <b>{name} #{p.id} is within 2% of its stop</b> {fmt_price(p.stop_price)}"
-        )
+        lines.append(f"⚠️ <b>{name} #{p.id} is within 2% of its stop</b> {fmt_price(p.stop_price)}")
     targets = [a.target_pct for a in due if a.kind == "target"]
     if targets:
         label = ", ".join(f"+{t:g}%" for t in targets)
@@ -423,9 +422,20 @@ def ai_skipped_line(reason: str) -> str:
 
 
 def ai_status_message(
-    *, enabled: bool, has_key: bool, strong: str, light: str, strong_overridden: bool,
-    light_overridden: bool, shadows: list[str], candidates: list[str], calls_hour: int,
-    limit: int, spend_today: float, spend_month: float, unavailable: str | None,
+    *,
+    enabled: bool,
+    has_key: bool,
+    strong: str,
+    light: str,
+    strong_overridden: bool,
+    light_overridden: bool,
+    shadows: list[str],
+    candidates: list[str],
+    calls_hour: int,
+    limit: int,
+    spend_today: float,
+    spend_month: float,
+    unavailable: str | None,
 ) -> str:
     if not enabled:
         state = "off (set ai.enabled: true in config.yaml)"
@@ -504,7 +514,8 @@ def stats_message(report) -> str:
     else:
         lines.append("<pre>" + escape(strategy_table(report.strategies)) + "</pre>")
         lines.append(
-            "<i>Rules baseline = enter every signal · You = what you entered · n = signals"
+            "<i>Rules baseline = enter every signal · With/Against trend = signals that"
+            " passed/failed the trend checks · You = what you entered · n = signals"
             " judged · trd = trades taken · avg/tot = net % per trade, equal size · acc = right"
             " to enter or skip · * fewer than 10 answers, too early to judge</i>"
         )
